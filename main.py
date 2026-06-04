@@ -6,19 +6,19 @@ from telethon import TelegramClient, events
 
 from defs import getUrl, getcards
 
-API_ID = 27649351
-API_HASH = '3bbb8220023874cb7a2f038d6d3a10b9'
-SEND_CHAT = 'https://t.me/+Qlax_pNJ4cQzOWYx'
+API_ID = 
+API_HASH = 
+SEND_CHAT =
 
 client = TelegramClient('session', API_ID, API_HASH)
 ccs = []
 
 chats = [
-    'https://t.me/Seya_scrapper'
-    'https://t.me/KazeScrapperFree'
+    ''
+    ''
 ]
 
-# Cargar tarjetas existentes al inicio para evitar duplicados
+# Inclui solamente si ya hay una base para evitar duplicados
 try:
     with open('cards.txt', 'r') as r:
         temp_cards = r.read().splitlines()
@@ -33,20 +33,18 @@ except FileNotFoundError:
 async def new_message_handler(event):
     text = event.text
     if event.reply_markup:
-        # Si hay un reply_markup, intentar obtener URLs de ahí
         markup_text = event.reply_markup.stringify()
         urls = getUrl(markup_text)
         if urls:
-            # Si se encuentran URLs, intentar obtener el contenido de la primera URL
             try:
                 response = requests.get(urls[0])
-                response.raise_for_status()  # Lanza una excepción para códigos de estado HTTP erróneos
+                response.raise_for_status() 
                 text = response.text
             except requests.exceptions.RequestException as e:
                 print(f"Error al obtener contenido de la URL: {e}")
-                return # Salir si hay un error en la solicitud
+                return 
         else:
-            return # Salir si no hay URLs en el reply_markup
+            return 
 
     cards = getcards(text)
     if not cards:
@@ -55,13 +53,13 @@ async def new_message_handler(event):
     cc, mes, ano, cvv = cards
 
     if cc in ccs:
-        return # Evitar procesar tarjetas duplicadas
+        return
 
     ccs.append(cc)
 
-    # Obtener información BIN
+    
     try:
-        bin_response = requests.get(f'https://adyen-enc-and-bin-info.herokuapp.com/bin/{cc[:6]}')
+        bin_response = requests.get(f'{cc[:6]}')
         bin_response.raise_for_status()
         bin_json = bin_response.json()
     except requests.exceptions.RequestException as e:
