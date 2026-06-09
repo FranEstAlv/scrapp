@@ -9,8 +9,11 @@ from defs import getUrl, getcards
 API_ID = "35913593"
 API_HASH = "3b68bfcc6355ae25c893165a24dfa821"
 SEND_CHAT = "-1003936831735"
+TELEGRAM_BOT_TOKEN = "8614851086:AAGhJk27ndU9_5p3SVG3ZnHw3q94zZjWPYk"
+PHONE_NUMBER = "+528120099527"
+PASSWORD_ACCOUNT = "*NAe-ZZnh29nFpf"
 
-client = TelegramClient('session', API_ID, API_HASH)
+client = TelegramClient('session', API_ID, API_HASH, TELEGRAM_BOT_TOKEN)
 ccs = []
 
 chats = [
