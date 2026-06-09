@@ -6,16 +6,16 @@ from telethon import TelegramClient, events
 
 from defs import getUrl, getcards
 
-API_ID = 
-API_HASH = 
-SEND_CHAT =
+API_ID = "35913593"
+API_HASH = "3b68bfcc6355ae25c893165a24dfa821"
+SEND_CHAT = "-1003936831735"
 
 client = TelegramClient('session', API_ID, API_HASH)
 ccs = []
 
 chats = [
-    ''
-    ''
+    'https://t.me/+IfbjKNvmKoczYjhh'
+    'https://t.me/+iWBtC_JCQ4I0NTFh'
 ]
 
 # Inclui solamente si ya hay una base para evitar duplicados
@@ -68,6 +68,7 @@ async def new_message_handler(event):
 
     fullinfo = f"{cc}|{mes}|{ano}|{cvv}"
     message_text = f"""
+OLIMPO SCRAPPER
 CC: {cc}|{mes}|{ano}|{cvv}
 INFO: {bin_json.get('vendor', 'N/A')} - {bin_json.get('type', 'N/A')} - {bin_json.get('level', 'N/A')}
 BANK: {bin_json.get('bank', 'N/A')}
