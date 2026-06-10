@@ -126,33 +126,45 @@ def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     El CSV debe tener columnas como 'bin', 'brand', 'tipo', 'nivel', 'Banco', 'país'.
     """
     bin_db: Dict[str, Dict[str, str]] = {}
+
     try:
-        with open(csv_path, "r", encoding="utf-8") as f:
+        with open(csv_path, "r", encoding="utf-8-sig", newline="") as f:
             reader = csv.DictReader(f)
+
             for row in reader:
                 bin_code = row.get("bin", "").strip()
+
                 if bin_code:
                     bin_db[bin_code] = {
-                        "brand": row.get("brand", "Desconocido"),
-                        "tipo": row.get("tipo", "Desconocido"),
-                        "nivel": row.get("nivel", ""),  # Nivel puede estar vacío
-                        "banco": row.get("Banco", "Desconocido"),
-                        "pais": row.get("país", "Desconocido"),
-                        "bin": bin_code,  # Guardar el bin normalizado
+                        "brand": row.get("brand", "Desconocido").strip(),
+                        "tipo": row.get("tipo", "Desconocido").strip(),
+                        "nivel": row.get("nivel", "").strip(),
+                        "banco": row.get("Banco", "Desconocido").strip(),
+                        "pais": row.get("país", "Desconocido").strip(),
+                        "bin": bin_code,
                     }
+
         logger.info(f"✅ Base de datos BIN cargada: {len(bin_db)} entradas")
-        
+
     except FileNotFoundError:
         logger.warning(
-            
-            f"⚠️ Archivo CSV de BINs no encontrado: '{csv_path}'. El bot funcionará sin información de BIN.",
-            f"⚠️ Error al leer el archivo CSV de BINs '{csv_path}': {e}. El bot funcionará sin información de BIN.",
-            f"⚠️ Error inesperado al cargar BINs desde '{csv_path}': {e}. El bot funcionará sin información de BIN."
-
+            f"⚠️ Archivo CSV de BINs no encontrado: '{csv_path}'. "
+            "El bot funcionará sin información de BIN."
         )
-        
-    return bin_db
 
+    except csv.Error as e:
+        logger.warning(
+            f"⚠️ Error al leer el archivo CSV de BINs '{csv_path}': {e}. "
+            "El bot funcionará sin información de BIN."
+        )
+
+    except Exception:
+        logger.exception(
+            f"⚠️ Error inesperado al cargar BINs desde '{csv_path}'. "
+            "El bot funcionará sin información de BIN."
+        )
+
+    return bin_db
 
 def get_bin_info(card_number: str, bin_database: Dict[str, Dict[str, str]]) -> Optional[Dict[str, str]]:
     """Obtiene información del BIN desde la base de datos proporcionada."""
