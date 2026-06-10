@@ -139,8 +139,6 @@ def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
                         "pais": row.get("país", "Desconocido"),
                         "bin": bin_code, # Guardar el bin normalizado
                     }
-        logger.info(f"✅ Base de datos BIN cargada: {len(bin_db)} entradas desde '{csv_path}'")
-    except FileNotFoundError:
         logger.error(f"❌ Archivo CSV de BINs no encontrado: '{csv_path}'. El bot funcionará sin información de BIN.")
     except csv.Error as e:
         logger.error(f"❌ Error al leer el archivo CSV de BINs '{csv_path}': {e}. El bot funcionará sin información de BIN.")
