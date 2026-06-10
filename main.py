@@ -18,7 +18,6 @@ API_ID = "35913593"
 API_HASH = "3b68bfcc6355ae25c893165a24dfa821"
 SESSION_STRING = os.environ.get("SESSION_STRING")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-SEND_CHAT = "-1003936831735"
 DESTINATION_CHAT = int(os.environ.get("DESTINATION_CHAT", SEND_CHAT))
 CHATS_TO_SCRAPE = [
     "https://t.me/+IfbjKNvmKoczYjhh",
