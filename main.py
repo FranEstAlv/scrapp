@@ -6,7 +6,6 @@ import json
 import logging
 import requests
 from pyrogram import Client, filters
-from pyrogram.types
 from pyrogram import idle
 from defs import getUrl, getcards
 
