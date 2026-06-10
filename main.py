@@ -252,7 +252,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"Banco: {banco}\n"
         f"País: {pais}"
         f"━━━━━━━━\n"
-        f"<b>OLIMPO BINS</b>
+        f"<b>OLIMPO BINS</b>"
     )
 
     return message
