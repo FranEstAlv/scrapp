@@ -4,21 +4,31 @@ import re
 import csv
 import json
 import logging
-import requests
+import hashlib
+
+try:
+    APP_LOOP = asyncio.get_event_loop()
+except RuntimeError:
+    APP_LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(APP_LOOP)
+
 from pyrogram import Client, filters
-from pyrogram import idle
 from pyrogram.enums import ParseMode
 from typing import Dict, List, Optional, Any
 
 
-API_ID = os.environ.get("API_ID")
+API_ID_STR = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # Validar variables críticas
-if not all([API_ID, API_HASH, SESSION_STRING, BOT_TOKEN]):
+if not all([API_ID_STR, API_HASH, SESSION_STRING, BOT_TOKEN]):
     raise ValueError("Las variables de entorno API_ID, API_HASH, SESSION_STRING y BOT_TOKEN son obligatorias.")
+try:
+    API_ID = int(API_ID_STR)
+except (TypeError, ValueError):
+    raise ValueError("API_ID debe ser un número entero válido.")
 
 # Configurar el chat de destino. Si no se proporciona, se usará un valor por defecto o se lanzará un error.
 # Se asume que SEND_CHAT no es una variable de entorno válida y se usa un valor por defecto.
@@ -72,16 +82,18 @@ class SimpleDB:
         return {
             "last_ids": {},
             "stats": {"total_cards": 0, "total_scans": 0},
-            "processed_cards": [], # Almacena los números de tarjeta completos para evitar duplicados
+            "processed_cards": [], # Almacena huellas SHA-256 para evitar duplicados sin guardar datos sensibles
         }
 
     def _save(self) -> None:
         """Guarda los datos en el archivo JSON."""
         try:
-            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            db_dir = os.path.dirname(self.db_path)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
             with open(self.db_path, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2)
-        except IOError as e:
+        except OSError as e:
             logger.error(f"❌ Error guardando DB en '{self.db_path}': {e}")
 
     def get_last_id(self, chat_id: int) -> int:
@@ -93,20 +105,21 @@ class SimpleDB:
         self.data["last_ids"][str(chat_id)] = message_id
         self._save()
 
-    def is_card_processed(self, card_number: str) -> bool:
-        """Verifica si la tarjeta (número completo) ya fue procesada."""
-        # Usamos un conjunto para búsquedas más rápidas si la lista crece mucho.
-        # Sin embargo, para mantener la compatibilidad con el formato actual y la simplicidad,
-        # se mantiene como lista y se limita su tamaño.
-        return card_number in self.data.get("processed_cards", [])
+    def is_card_processed(self, card_data: str) -> bool:
+        """Verifica si la tarjeta ya fue procesada usando una huella irreversible."""
+        processed_cards = self.data.get("processed_cards", [])
+        fingerprint = get_card_fingerprint(card_data)
+        # Se mantiene compatibilidad con registros antiguos que pudieran estar en texto plano.
+        return fingerprint in processed_cards or card_data in processed_cards
 
-    def mark_card_processed(self, card_number: str) -> None:
-        """Marca una tarjeta como procesada y mantiene un historial limitado."""
+    def mark_card_processed(self, card_data: str) -> None:
+        """Marca una tarjeta como procesada sin persistir PAN/CVV en texto plano."""
         if "processed_cards" not in self.data:
             self.data["processed_cards"] = []
-        
-        if card_number not in self.data["processed_cards"]:
-            self.data["processed_cards"].append(card_number)
+
+        fingerprint = get_card_fingerprint(card_data)
+        if fingerprint not in self.data["processed_cards"]:
+            self.data["processed_cards"].append(fingerprint)
             # Limitar el tamaño de la lista para evitar el consumo excesivo de memoria.
             # Un tamaño de 10000 es un compromiso. Para volúmenes muy altos, considerar una DB real.
             if len(self.data["processed_cards"]) > 10000:
@@ -115,6 +128,7 @@ class SimpleDB:
 
     def add_cards_stats(self, count: int = 1) -> None:
         """Actualiza las estadísticas de tarjetas procesadas y escaneos."""
+        self.data.setdefault("stats", {"total_cards": 0, "total_scans": 0})
         self.data["stats"]["total_cards"] += count
         self.data["stats"]["total_scans"] += 1
         self._save()
@@ -166,6 +180,19 @@ def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
 
     return bin_db
 
+def get_card_fingerprint(card_data: str) -> str:
+    """Devuelve una huella SHA-256 para deduplicar sin guardar datos sensibles completos."""
+    return hashlib.sha256(card_data.encode("utf-8")).hexdigest()
+
+
+def mask_card_number(card_number: str) -> str:
+    """Enmascara una tarjeta mostrando los primeros 12 dígitos y ocultando los últimos 4."""
+    if len(card_number) <= 4:
+        return "X" * len(card_number)
+    visible_digits = min(12, len(card_number) - 4)
+    return f"{card_number[:visible_digits]}{'X' * (len(card_number) - visible_digits)}"
+
+
 def get_bin_info(card_number: str, bin_database: Dict[str, Dict[str, str]]) -> Optional[Dict[str, str]]:
     """Obtiene información del BIN desde la base de datos proporcionada."""
     # Intentar con BINs de longitud 6, 5 y 4.
@@ -195,10 +222,10 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
 
     bin_info = get_bin_info(card_num, bin_database)
 
-    # Censurar la tarjeta para mostrarla
-    censored_card_num = f"{card_num[:12]}xxxx"
-    censored_cvv = "xxx"
-    censored = f"{censored_card_num}|{month}|{year}|{censored_cvv}"
+    # Censurar la tarjeta para mostrarla sin exponer PAN/CVV completos.
+    censored_card_num = mask_card_number(card_num)
+    display_year = f"20{year}" if len(year) == 2 else year
+    censored = f"{censored_card_num}|{month}|{display_year}"
 
     # Extraer información del BIN, con valores por defecto
     tipo = "Desconocido"
@@ -217,15 +244,14 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         bin_code_found = bin_info.get("bin", "Desconocido")
 
     message = (
-        f"💳 <b>Tarjeta Detectada</b>\n"
-        f"<code>{card_data}</code>\n"
-        f"<code>{censored}</code>\n"
-        f"<b>BIN:</b> <code>{bin_code_found}</code>\n"
-        f"<b>Tipo:</b> {tipo} | <b>Marca:</b> {brand}\n"
-        f"<b>Nivel:</b> {nivel}\n"
-        f"<b>Banco:</b> {banco}\n"
-        f"<b>País:</b> {pais}\n"
-        f"━━━━━━━━━━━━━━━"
+        f"OLIMPO SCRAPP\n"
+        f"💳 Tarjeta Detectada\n"
+        f"<blockquote>{censored}</blockquote>\n"
+        f"BIN: {bin_code_found}\n"
+        f"Tipo: {tipo} | Marca: {brand}\n"
+        f"Nivel: {nivel}\n"
+        f"Banco: {banco}\n"
+        f"País: {pais}"
     )
 
     return message
@@ -318,19 +344,17 @@ async def send_card_immediately(card_data: str, source_info: str = "") -> bool:
             # logger.debug(f"Tarjeta ya procesada: {card_data[:6]}xxxx") # Log de depuración
             return False
 
+        # No se envían números de tarjeta ni CVV completos al chat de destino.
         message_content = format_card_message(card_data, BIN_DATABASE)
         if not message_content:
             logger.warning(f"No se pudo formatear el mensaje para la tarjeta: {card_data}")
             return False
 
-        # Añadir prefijo de origen si está disponible
-        full_message = f"{source_info}\n{message_content}" if source_info else message_content
-
         await app.send_message(
-            DESTINATION_CHAT, full_message, parse_mode=ParseMode.HTML
+            DESTINATION_CHAT, message_content, parse_mode=ParseMode.HTML
         )
 
-        db.mark_card_processed(card_data) # Marcar la tarjeta completa como procesada
+        db.mark_card_processed(card_data) # Marcar la tarjeta como procesada mediante huella irreversible
         db.add_cards_stats(1) # Actualizar estadísticas
 
         logger.info(f"✅ Tarjeta enviada: {card_num_prefix[:6]}xxxx ({source_info})")
@@ -404,44 +428,54 @@ async def join_chat_if_needed(chat_identifier: str) -> bool:
 
 # --- Scanner Principal ---
 
-async def auto_scanner():
-    """
-    Scrapea los chats configurados continuamente en tiempo real.
-    """
-    await asyncio.sleep(5) # Pequeña espera inicial para asegurar que los clientes estén listos.
-
+async def resolve_configured_chats() -> List[tuple[str, int]]:
+    """Resuelve la lista configurada y conserva el identificador original de cada chat."""
     logger.info("Resolviendo identificadores de chats...")
-    resolved_chat_ids: List[int] = []
-    for chat_id_str in CHATS_TO_SCRAPE:
-        chat_id = await resolve_chat(chat_id_str)
-        if chat_id:
-            resolved_chat_ids.append(chat_id)
+    resolved_chats: List[tuple[str, int]] = []
 
-    if not resolved_chat_ids:
+    for chat_identifier in CHATS_TO_SCRAPE:
+        chat_id = await resolve_chat(chat_identifier)
+        if chat_id is not None:
+            resolved_chats.append((chat_identifier, chat_id))
+
+    return resolved_chats
+
+
+async def scan_configured_chats_once(resolved_chats: List[tuple[str, int]]) -> int:
+    """Ejecuta un único ciclo de escaneo y retorna la cantidad de tarjetas nuevas."""
+    total_new_cards_in_cycle = 0
+
+    for chat_identifier, chat_id in resolved_chats:
+        if await join_chat_if_needed(chat_identifier):
+            last_id, new_count = await scrape_chat_realtime(chat_id)
+            total_new_cards_in_cycle += new_count
+            db.set_last_id(chat_id, last_id)
+
+            if new_count > 0:
+                logger.info(f"  Chat {chat_id}: {new_count} nuevas tarjetas detectadas en este ciclo.")
+
+            await asyncio.sleep(3)
+        else:
+            logger.warning(f"Saltando chat {chat_id} porque no se pudo unir.")
+
+    return total_new_cards_in_cycle
+
+
+async def auto_scanner():
+    """Scrapea los chats configurados continuamente en tiempo real."""
+    await asyncio.sleep(5)
+
+    resolved_chats = await resolve_configured_chats()
+
+    if not resolved_chats:
         logger.error("❌ No hay chats válidos para escanear. Por favor, revise CHATS_TO_SCRAPE y la configuración.")
         return
 
-    logger.info(f"✅ {len(resolved_chat_ids)} chats listos para escanear: {resolved_chat_ids}")
+    logger.info(f"✅ {len(resolved_chats)} chats listos para escanear: {[chat_id for _, chat_id in resolved_chats]}")
 
     while True:
-        total_new_cards_in_cycle = 0
-        logger.info(f"🔍 Iniciando ciclo de escaneo en tiempo real...")
-
-        for chat_id in resolved_chat_ids:
-            # Asegurarse de estar unido al chat antes de intentar scrapear.
-            # Se usa el identificador original (str) para join_chat_if_needed.
-            if await join_chat_if_needed(CHATS_TO_SCRAPE[resolved_chat_ids.index(chat_id)]):
-                last_id, new_count = await scrape_chat_realtime(chat_id)
-                total_new_cards_in_cycle += new_count
-                db.set_last_id(chat_id, last_id) # Guardar el último ID procesado para este chat.
-                
-                if new_count > 0:
-                    logger.info(f"  Chat {chat_id}: {new_count} nuevas tarjetas detectadas en este ciclo.")
-                
-                # Pausa entre chats para evitar sobrecargar la API de Telegram.
-                await asyncio.sleep(3)
-            else:
-                logger.warning(f"Saltando chat {chat_id} porque no se pudo unir.")
+        logger.info("🔍 Iniciando ciclo de escaneo en tiempo real...")
+        total_new_cards_in_cycle = await scan_configured_chats_once(resolved_chats)
 
         if total_new_cards_in_cycle > 0:
             logger.info(f"✅ Ciclo de escaneo completado. Total de nuevas tarjetas detectadas: {total_new_cards_in_cycle}")
@@ -486,4 +520,91 @@ async def test_cmd(client: Client, message):
 
 @app.on_message(filters.command("status"))
 async def status_cmd(client: Client, message):
-    ""
+    """Comando /status - Muestra el estado actual del bot."""
+    stats = db.data.get("stats", {})
+    last_ids = db.data.get("last_ids", {})
+
+    await message.reply(
+        f"📡 <b>Estado del bot</b>\n\n"
+        f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
+        f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
+        f"<b>Intervalo:</b> <code>{CHECK_INTERVAL}s</code>\n"
+        f"<b>Tarjetas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
+        f"<b>Escaneos con hallazgos:</b> <code>{stats.get('total_scans', 0)}</code>\n"
+        f"<b>Chats con progreso:</b> <code>{len(last_ids)}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@app.on_message(filters.command("stats"))
+async def stats_cmd(client: Client, message):
+    """Comando /stats - Muestra estadísticas generales."""
+    stats = db.data.get("stats", {})
+    processed_count = len(db.data.get("processed_cards", []))
+
+    await message.reply(
+        f"📊 <b>Estadísticas</b>\n\n"
+        f"<b>Tarjetas nuevas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
+        f"<b>Ciclos con detecciones:</b> <code>{stats.get('total_scans', 0)}</code>\n"
+        f"<b>Registros deduplicados:</b> <code>{processed_count}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@app.on_message(filters.command("force"))
+async def force_cmd(client: Client, message):
+    """Comando /force - Fuerza un escaneo inmediato de todos los chats configurados."""
+    await message.reply("🔍 Iniciando escaneo manual...")
+    resolved_chats = await resolve_configured_chats()
+
+    if not resolved_chats:
+        await message.reply("❌ No hay chats válidos para escanear.")
+        return
+
+    total_new_cards = await scan_configured_chats_once(resolved_chats)
+    await message.reply(
+        f"✅ Escaneo manual completado. Nuevas tarjetas detectadas: <code>{total_new_cards}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def main() -> None:
+    """Punto de entrada principal: inicia ambos clientes y el scanner en segundo plano."""
+    scanner_task: Optional[asyncio.Task] = None
+
+    try:
+        logger.info("🚀 Iniciando clientes de Telegram...")
+        await user.start()
+        logger.info("✅ Cliente de usuario iniciado correctamente.")
+        await app.start()
+        logger.info("✅ Cliente bot iniciado correctamente.")
+
+        scanner_task = asyncio.create_task(auto_scanner())
+        logger.info("🤖 Bot en ejecución. Presione Ctrl+C para detenerlo.")
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Deteniendo bot...")
+    except Exception:
+        logger.exception("❌ Error fatal durante el arranque o ejecución del bot.")
+        raise
+    finally:
+        if scanner_task:
+            scanner_task.cancel()
+            try:
+                await scanner_task
+            except asyncio.CancelledError:
+                pass
+
+        if app.is_connected:
+            await app.stop()
+        if user.is_connected:
+            await user.stop()
+        logger.info("Bot detenido correctamente.")
+
+
+if __name__ == "__main__":
+    try:
+        APP_LOOP.run_until_complete(main())
+    finally:
+        APP_LOOP.run_until_complete(APP_LOOP.shutdown_asyncgens())
+        APP_LOOP.close()
