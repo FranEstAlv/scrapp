@@ -6,11 +6,8 @@ import json
 import logging
 import hashlib
 
-try:
-    APP_LOOP = asyncio.get_event_loop()
-except RuntimeError:
-    APP_LOOP = asyncio.new_event_loop()
-    asyncio.set_event_loop(APP_LOOP)
+APP_LOOP = asyncio.new_event_loop()
+asyncio.set_event_loop(APP_LOOP)
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
@@ -19,12 +16,12 @@ from typing import Dict, List, Optional, Any
 
 API_ID_STR = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
-SESSION_STRING = os.environ.get("SESSION_STRING")
+SESSION_STRING = os.environ.get("SESSION_STRING", "").strip().strip("\"\'")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
 # Validar variables críticas
-if not all([API_ID_STR, API_HASH, SESSION_STRING, BOT_TOKEN]):
-    raise ValueError("Las variables de entorno API_ID, API_HASH, SESSION_STRING y BOT_TOKEN son obligatorias.")
+if not all([API_ID_STR, API_HASH, BOT_TOKEN]):
+    raise ValueError("Las variables de entorno API_ID, API_HASH y BOT_TOKEN son obligatorias.")
 try:
     API_ID = int(API_ID_STR)
 except (TypeError, ValueError):
@@ -295,6 +292,7 @@ def extract_cards(text: str) -> List[str]:
 # --- Instancias Globales ---
 BIN_DATABASE: Dict[str, Dict[str, str]] = load_bin_database()
 db = SimpleDB()
+USER_CLIENT_READY = False
 
 # --- Clientes de Pyrogram ---
 # El cliente 'user' se utiliza para unirse a chats y leer mensajes.
@@ -321,6 +319,10 @@ async def resolve_chat(chat_identifier: str) -> Optional[int]:
     """
     Resuelve un identificador de chat (username o enlace) a su ID numérico.
     """
+    if not USER_CLIENT_READY:
+        logger.error("❌ Cliente de usuario no está iniciado; no se puede resolver chats.")
+        return None
+
     if isinstance(chat_identifier, int):
         return chat_identifier # Ya es un ID numérico
 
@@ -412,6 +414,10 @@ async def join_chat_if_needed(chat_identifier: str) -> bool:
     Intenta unir al cliente 'user' a un chat si no está ya unido.
     Retorna True si se unió o ya estaba unido, False si falló.
     """
+    if not USER_CLIENT_READY:
+        logger.error("❌ Cliente de usuario no está iniciado; no se puede unir a chats.")
+        return False
+
     try:
         # Intentar obtener información del chat. Si falla, significa que no estamos unidos o el chat no existe.
         await user.get_chat(chat_identifier)
@@ -524,8 +530,11 @@ async def status_cmd(client: Client, message):
     stats = db.data.get("stats", {})
     last_ids = db.data.get("last_ids", {})
 
+    scraper_status = "activo" if USER_CLIENT_READY else "deshabilitado: SESSION_STRING inválido o ausente"
+
     await message.reply(
         f"📡 <b>Estado del bot</b>\n\n"
+        f"<b>Scraper:</b> <code>{scraper_status}</code>\n"
         f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
         f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
         f"<b>Intervalo:</b> <code>{CHECK_INTERVAL}s</code>\n"
@@ -554,6 +563,10 @@ async def stats_cmd(client: Client, message):
 @app.on_message(filters.command("force"))
 async def force_cmd(client: Client, message):
     """Comando /force - Fuerza un escaneo inmediato de todos los chats configurados."""
+    if not USER_CLIENT_READY:
+        await message.reply("❌ Scraper deshabilitado: configura un SESSION_STRING válido de Pyrogram y reinicia el servicio.")
+        return
+
     await message.reply("🔍 Iniciando escaneo manual...")
     resolved_chats = await resolve_configured_chats()
 
@@ -568,19 +581,48 @@ async def force_cmd(client: Client, message):
     )
 
 
+async def start_user_client() -> bool:
+    """Inicia el cliente de usuario; si la sesión es inválida, mantiene vivo el bot."""
+    global USER_CLIENT_READY
+
+    if not SESSION_STRING:
+        logger.error(
+            "❌ SESSION_STRING no está configurado. El bot seguirá activo, "
+            "pero el scraper automático queda deshabilitado hasta configurar una sesión Pyrogram válida."
+        )
+        return False
+
+    try:
+        await user.start()
+    except Exception:
+        USER_CLIENT_READY = False
+        logger.exception(
+            "❌ No se pudo iniciar el cliente de usuario. Revisa SESSION_STRING: "
+            "debe ser una sesión válida generada con Pyrogram, no el BOT_TOKEN ni un archivo .session."
+        )
+        return False
+
+    USER_CLIENT_READY = True
+    logger.info("✅ Cliente de usuario iniciado correctamente.")
+    return True
+
+
 async def main() -> None:
-    """Punto de entrada principal: inicia ambos clientes y el scanner en segundo plano."""
+    """Punto de entrada principal: inicia el bot y, si es posible, el scanner en segundo plano."""
     scanner_task: Optional[asyncio.Task] = None
 
     try:
-        logger.info("🚀 Iniciando clientes de Telegram...")
-        await user.start()
-        logger.info("✅ Cliente de usuario iniciado correctamente.")
+        logger.info("🚀 Iniciando cliente bot de Telegram...")
         await app.start()
         logger.info("✅ Cliente bot iniciado correctamente.")
 
-        scanner_task = asyncio.create_task(auto_scanner())
-        logger.info("🤖 Bot en ejecución. Presione Ctrl+C para detenerlo.")
+        logger.info("🚀 Iniciando cliente de usuario para el scraper...")
+        if await start_user_client():
+            scanner_task = asyncio.create_task(auto_scanner())
+            logger.info("🤖 Scraper en ejecución. Presione Ctrl+C para detenerlo.")
+        else:
+            logger.error("⚠️ Scraper deshabilitado; el bot queda vivo para comandos mientras corriges SESSION_STRING.")
+
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Deteniendo bot...")
@@ -595,10 +637,10 @@ async def main() -> None:
             except asyncio.CancelledError:
                 pass
 
-        if app.is_connected:
-            await app.stop()
         if user.is_connected:
             await user.stop()
+        if app.is_connected:
+            await app.stop()
         logger.info("Bot detenido correctamente.")
 
 
