@@ -12,7 +12,7 @@ asyncio.set_event_loop(APP_LOOP)
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 
 
 API_ID_STR = os.environ.get("API_ID")
@@ -28,18 +28,20 @@ try:
 except (TypeError, ValueError):
     raise ValueError("API_ID debe ser un número entero válido.")
 
-# Configurar el chat de destino. Si no se proporciona, se usará un valor por defecto o se lanzará un error.
-# Se asume que SEND_CHAT no es una variable de entorno válida y se usa un valor por defecto.
-# Se recomienda definir DESTINATION_CHAT explícitamente en el entorno.
-DESTINATION_CHAT_STR = os.environ.get("DESTINATION_CHAT")
-if DESTINATION_CHAT_STR is None:
-    # Si DESTINATION_CHAT no está definido, se podría lanzar un error o usar un valor por defecto seguro.
-    # Para este ejemplo, lanzamos un error para forzar la configuración.
+# Configurar el chat de destino. Acepta ID numérico, @username o enlace t.me.
+DESTINATION_CHAT_STR = os.environ.get("DESTINATION_CHAT", "").strip()
+if not DESTINATION_CHAT_STR:
     raise ValueError("La variable de entorno DESTINATION_CHAT es obligatoria.")
+
+DESTINATION_CHAT: Union[int, str]
 try:
     DESTINATION_CHAT = int(DESTINATION_CHAT_STR)
 except ValueError:
-    raise ValueError("DESTINATION_CHAT debe ser un número entero válido.")
+    DESTINATION_CHAT = DESTINATION_CHAT_STR
+
+SEND_INTERVAL_SECONDS: int = int(os.environ.get("SEND_INTERVAL_SECONDS", 180))
+DESTINATION_CHAT_ID: Optional[int] = DESTINATION_CHAT if isinstance(DESTINATION_CHAT, int) else None
+DESTINATION_REFRESH_PENDING: bool = False
 
 CHATS_TO_SCRAPE: List[str] = [
     "https://t.me/+IfbjKNvmKoczYjhh",
@@ -369,6 +371,8 @@ def extract_cards(text: str) -> List[str]:
 BIN_DATABASE: Dict[str, Dict[str, str]] = load_bin_database()
 db = SimpleDB()
 USER_CLIENT_READY = False
+OUTGOING_CARD_QUEUE: asyncio.Queue = asyncio.Queue()
+QUEUED_CARD_FINGERPRINTS: set[str] = set()
 
 # --- Clientes de Pyrogram ---
 # El cliente 'user' se utiliza para unirse a chats y leer mensajes.
@@ -410,41 +414,170 @@ async def resolve_chat(chat_identifier: str) -> Optional[int]:
         logger.error(f"  ❌ No se pudo resolver '{chat_identifier}': {e}")
         return None
 
-async def send_card_immediately(card_data: str, source_info: str = "") -> bool:
-    """
-    Envía una tarjeta detectada inmediatamente al chat de destino.
-    Retorna True si la tarjeta fue enviada y marcada como procesada, False en caso contrario.
-    """
+async def resolve_destination_chat(force_refresh: bool = False) -> Optional[int]:
+    """Resuelve y cachea el chat de destino para tolerar cambios de ID o username."""
+    global DESTINATION_CHAT_ID, DESTINATION_REFRESH_PENDING
+
+    if DESTINATION_CHAT_ID is not None and not force_refresh:
+        return DESTINATION_CHAT_ID
+
     try:
-        card_num_prefix = card_data.split("|")[0] # Usar prefijo para la verificación rápida
-        
-        if db.is_card_processed(card_data): # Verificar el número completo de tarjeta
-            # logger.debug(f"Tarjeta ya procesada: {card_data[:6]}xxxx") # Log de depuración
-            return False
-
-        # No se envían números de tarjeta ni CVV completos al chat de destino.
-        message_content = format_card_message(card_data, BIN_DATABASE)
-        if not message_content:
-            logger.warning(f"No se pudo formatear el mensaje para la tarjeta: {card_data}")
-            return False
-
-        await app.send_message(
-            DESTINATION_CHAT, message_content, parse_mode=ParseMode.HTML
+        chat = await app.get_chat(DESTINATION_CHAT)
+        DESTINATION_CHAT_ID = chat.id
+        DESTINATION_REFRESH_PENDING = False
+        logger.info(f"✅ Destination chat resuelto: {DESTINATION_CHAT} → ID {DESTINATION_CHAT_ID}")
+        return DESTINATION_CHAT_ID
+    except Exception as e:
+        DESTINATION_REFRESH_PENDING = True
+        logger.error(
+            f"❌ No se pudo resolver destination chat '{DESTINATION_CHAT}'. "
+            f"Esperando un evento del canal/grupo para actualizarlo: {e}"
         )
+        return None
 
-        db.mark_card_processed(card_data) # Marcar la tarjeta como procesada mediante huella irreversible
-        db.add_cards_stats(1) # Actualizar estadísticas
 
-        logger.info(f"✅ Tarjeta enviada: {card_num_prefix[:6]}xxxx ({source_info})")
+def destination_identifier_matches_chat(chat) -> bool:
+    """Indica si un evento recibido corresponde al destination chat configurado."""
+    identifier = str(DESTINATION_CHAT).strip()
+    chat_id = getattr(chat, "id", None)
+
+    if DESTINATION_CHAT_ID is not None and chat_id == DESTINATION_CHAT_ID:
         return True
 
-    except Exception as e:
-        logger.error(f"Error enviando tarjeta '{card_data[:6]}xxxx' a {DESTINATION_CHAT}: {e}")
+    if identifier.lstrip("-").isdigit():
+        return chat_id == int(identifier)
+
+    username = (getattr(chat, "username", None) or "").lower()
+    normalized_identifier = identifier.lower().rstrip("/")
+
+    if normalized_identifier.startswith("@"):
+        return username == normalized_identifier[1:]
+
+    if "t.me/" in normalized_identifier:
+        return bool(username) and normalized_identifier.endswith(f"/{username}")
+
+    return bool(username) and username == normalized_identifier
+
+
+async def register_destination_chat_event(chat) -> None:
+    """Actualiza el cache del destino cuando Telegram entrega un evento del canal/grupo."""
+    global DESTINATION_CHAT_ID, DESTINATION_REFRESH_PENDING
+
+    if not chat:
+        return
+
+    if DESTINATION_REFRESH_PENDING or destination_identifier_matches_chat(chat):
+        previous_id = DESTINATION_CHAT_ID
+        DESTINATION_CHAT_ID = chat.id
+        DESTINATION_REFRESH_PENDING = False
+
+        if previous_id != DESTINATION_CHAT_ID:
+            logger.info(
+                f"🔄 Destination chat actualizado por evento recibido: "
+                f"{previous_id} → {DESTINATION_CHAT_ID} ({getattr(chat, 'title', '')})"
+            )
+        else:
+            logger.debug(f"Destination chat confirmado por evento: {DESTINATION_CHAT_ID}")
+
+
+async def deliver_card_message(message_content: str) -> bool:
+    """Envía un mensaje al destination chat, refrescando el ID si Telegram rechaza el envío."""
+    global DESTINATION_REFRESH_PENDING
+    destination_chat_id = await resolve_destination_chat()
+    if destination_chat_id is None:
         return False
+
+    try:
+        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
+        return True
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Falló el envío a destination chat {destination_chat_id}; "
+            f"se intentará refrescar el ID: {e}"
+        )
+
+    destination_chat_id = await resolve_destination_chat(force_refresh=True)
+    if destination_chat_id is None:
+        return False
+
+    try:
+        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
+        return True
+    except Exception as e:
+        DESTINATION_REFRESH_PENDING = True
+        logger.error(
+            f"❌ Error enviando al destination chat {destination_chat_id}. "
+            f"Queda pendiente registrar un evento del canal/grupo para actualizar el ID: {e}"
+        )
+        return False
+
+
+async def send_card_immediately(card_data: str, source_info: str = "") -> bool:
+    """
+    Encola una tarjeta detectada para enviarla al chat de destino con pausa entre mensajes.
+    Retorna True si la tarjeta fue aceptada en la cola, False si ya estaba procesada/encolada o no se pudo formatear.
+    """
+    fingerprint = get_card_fingerprint(card_data)
+
+    if db.is_card_processed(card_data) or fingerprint in QUEUED_CARD_FINGERPRINTS:
+        return False
+
+    message_content = format_card_message(card_data, BIN_DATABASE)
+    if not message_content:
+        logger.warning(f"No se pudo formatear el mensaje para la tarjeta: {card_data}")
+        return False
+
+    QUEUED_CARD_FINGERPRINTS.add(fingerprint)
+    await OUTGOING_CARD_QUEUE.put((fingerprint, card_data, message_content, source_info, 0))
+    logger.info(
+        f"📥 Tarjeta encolada: {card_data[:6]}xxxx ({source_info}). "
+        f"Tamaño de cola: {OUTGOING_CARD_QUEUE.qsize()}"
+    )
+    return True
+
+
+async def outgoing_card_sender() -> None:
+    """Consume la cola de tarjetas enviando como máximo un mensaje cada SEND_INTERVAL_SECONDS."""
+    logger.info(f"📨 Cola de envío iniciada: 1 mensaje cada {SEND_INTERVAL_SECONDS} segundos.")
+
+    while True:
+        fingerprint, card_data, message_content, source_info, attempts = await OUTGOING_CARD_QUEUE.get()
+        sent = False
+        already_processed = False
+
+        try:
+            already_processed = db.is_card_processed(card_data)
+            if already_processed:
+                logger.debug(f"Tarjeta ya procesada antes de enviar: {card_data[:6]}xxxx")
+                sent = True
+            else:
+                sent = await deliver_card_message(message_content)
+
+            if already_processed:
+                pass
+            elif sent:
+                db.mark_card_processed(card_data)
+                db.add_cards_stats(1)
+                logger.info(f"✅ Tarjeta enviada: {card_data[:6]}xxxx ({source_info})")
+            elif attempts < 3:
+                await OUTGOING_CARD_QUEUE.put((fingerprint, card_data, message_content, source_info, attempts + 1))
+                logger.warning(
+                    f"🔁 Reintentando tarjeta {card_data[:6]}xxxx más tarde "
+                    f"(intento {attempts + 1}/3)."
+                )
+            else:
+                logger.error(f"❌ Tarjeta descartada tras 3 reintentos: {card_data[:6]}xxxx")
+        finally:
+            if sent or attempts >= 3:
+                QUEUED_CARD_FINGERPRINTS.discard(fingerprint)
+
+            OUTGOING_CARD_QUEUE.task_done()
+
+        await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
 async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
     """
-    Scrapea mensajes de un chat específico y envía las tarjetas detectadas INMEDIATAMENTE.
+    Scrapea mensajes de un chat específico y encola las tarjetas detectadas para envío pausado.
     Retorna el último ID de mensaje procesado y el número de nuevas tarjetas encontradas.
     """
     last_processed_id = db.get_last_id(chat_id)
@@ -470,12 +603,6 @@ async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
                     success = await send_card_immediately(card, f"Chat: {chat_id}")
                     if success:
                         new_cards_count += 1
-                    # Pequeña pausa entre el envío de cada tarjeta para no saturar el bot.
-                    await asyncio.sleep(0.2) 
-
-                # Si se encontraron muchas tarjetas en un solo mensaje, hacer una pausa más larga.
-                if len(cards_found) > 5:
-                    await asyncio.sleep(2)
 
         logger.info(f"Chat {chat_id}: Procesados {max_message_id_in_chat - last_processed_id} mensajes nuevos. Encontradas {new_cards_count} tarjetas.")
         return max_message_id_in_chat, new_cards_count
@@ -569,6 +696,13 @@ async def auto_scanner():
 
 # --- Comandos del Bot ---
 
+
+@app.on_message(~filters.private, group=1)
+async def destination_event_logger(client: Client, message):
+    """Registra eventos de canales/grupos para mantener actualizado el ID del destination chat."""
+    await register_destination_chat_event(message.chat)
+
+
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client: Client, message):
     """Comando /start - Muestra información y ayuda del bot."""
@@ -577,13 +711,14 @@ async def start_cmd(client: Client, message):
     await message.reply(
         f"🤖 <b>Auto Scraper Bot - Realtime</b>\n\n"
         f"<b>Chats monitoreados:</b>\n{chats_list_formatted}\n\n"
-        f"💳 Envío: <b>Inmediato por cada tarjeta detectada</b>\n"
+        f"💳 Envío: <b>Cola pausada, 1 mensaje cada {SEND_INTERVAL_SECONDS}s</b>\n"
         f"📊 Base BIN: <code>{CSV_FILE}</code> ({len(BIN_DATABASE)} entradas cargadas)\n"
         f"⏱️ Intervalo de escaneo: <code>{CHECK_INTERVAL}s</code>\n\n"
         f"<b>Comandos disponibles:</b>\n"
         f"/status - Ver estado actual del bot.\n"
         f"/force - Forzar un escaneo inmediato de todos los chats.\n"
         f"/stats - Mostrar estadísticas generales.\n"
+        f"/refresh_destination - Refrescar el destination chat.\n"
         f"/test - Enviar una tarjeta de prueba formateada.",
         parse_mode=ParseMode.HTML,
     )
@@ -596,9 +731,9 @@ async def test_cmd(client: Client, message):
     
     success = await send_card_immediately(test_card_data, "Comando /test")
     if success:
-        await message.reply("✅ Mensaje de prueba enviado exitosamente.")
+        await message.reply("✅ Mensaje de prueba encolado exitosamente.")
     else:
-        await message.reply("❌ Falló el envío del mensaje de prueba.")
+        await message.reply("❌ Falló el encolado del mensaje de prueba.")
 
 @app.on_message(filters.command("status"))
 async def status_cmd(client: Client, message):
@@ -613,10 +748,33 @@ async def status_cmd(client: Client, message):
         f"<b>Scraper:</b> <code>{scraper_status}</code>\n"
         f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
         f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
-        f"<b>Intervalo:</b> <code>{CHECK_INTERVAL}s</code>\n"
+        f"<b>Intervalo de escaneo:</b> <code>{CHECK_INTERVAL}s</code>\n"
+        f"<b>Intervalo de envío:</b> <code>{SEND_INTERVAL_SECONDS}s</code>\n"
+        f"<b>Cola pendiente:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>\n"
+        f"<b>Destination chat:</b> <code>{DESTINATION_CHAT_ID or DESTINATION_CHAT}</code>\n"
         f"<b>Tarjetas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
         f"<b>Escaneos con hallazgos:</b> <code>{stats.get('total_scans', 0)}</code>\n"
         f"<b>Chats con progreso:</b> <code>{len(last_ids)}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+
+
+@app.on_message(filters.command("refresh_destination"))
+async def refresh_destination_cmd(client: Client, message):
+    """Comando /refresh_destination - Fuerza la resolución del destination chat configurado."""
+    destination_chat_id = await resolve_destination_chat(force_refresh=True)
+
+    if destination_chat_id is None:
+        await message.reply(
+            "❌ No se pudo resolver el destination chat. "
+            "Envía o reenvía un evento/mensaje en el canal destino para que el bot registre el ID actualizado."
+        )
+        return
+
+    await message.reply(
+        f"✅ Destination chat actualizado: <code>{destination_chat_id}</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -631,7 +789,8 @@ async def stats_cmd(client: Client, message):
         f"📊 <b>Estadísticas</b>\n\n"
         f"<b>Tarjetas nuevas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
         f"<b>Ciclos con detecciones:</b> <code>{stats.get('total_scans', 0)}</code>\n"
-        f"<b>Registros deduplicados:</b> <code>{processed_count}</code>",
+        f"<b>Registros deduplicados:</b> <code>{processed_count}</code>\n"
+        f"<b>Mensajes pendientes en cola:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -686,11 +845,14 @@ async def start_user_client() -> bool:
 async def main() -> None:
     """Punto de entrada principal: inicia el bot y, si es posible, el scanner en segundo plano."""
     scanner_task: Optional[asyncio.Task] = None
+    sender_task: Optional[asyncio.Task] = None
 
     try:
         logger.info("🚀 Iniciando cliente bot de Telegram...")
         await app.start()
         logger.info("✅ Cliente bot iniciado correctamente.")
+        await resolve_destination_chat(force_refresh=True)
+        sender_task = asyncio.create_task(outgoing_card_sender())
 
         logger.info("🚀 Iniciando cliente de usuario para el scraper...")
         if await start_user_client():
@@ -706,12 +868,13 @@ async def main() -> None:
         logger.exception("❌ Error fatal durante el arranque o ejecución del bot.")
         raise
     finally:
-        if scanner_task:
-            scanner_task.cancel()
-            try:
-                await scanner_task
-            except asyncio.CancelledError:
-                pass
+        for task in (scanner_task, sender_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
         if user.is_connected:
             await user.stop()
