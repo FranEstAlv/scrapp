@@ -1,29 +1,54 @@
 import asyncio
 import os
 import re
+import csv
+import json
+import logging
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
+from pyrogram import Client, filters
+from pyrogram.types import ParseMode
+from pyrogram import idle
 from defs import getUrl, getcards
 
+# ============================================================
+# CONFIGURACIÓN - VARIABLES DE ENTORNO
+# ============================================================
 
 API_ID = "35913593"
 API_HASH = "3b68bfcc6355ae25c893165a24dfa821"
 SESSION_STRING = os.environ.get("SESSION_STRING")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
 SEND_CHAT = "-1003936831735"
+DESTINATION_CHAT = int(os.environ.get("DESTINATION_CHAT", SEND_CHAT))
+CHATS_TO_SCRAPE = [
+    "https://t.me/+IfbjKNvmKoczYjhh",
+    "https://t.me/+iWBtC_JCQ4I0NTFh",
+    "@viplunaticscrapper"
+]
+CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", 30))
+DB_VOLUME = os.environ.get("DB_VOLUME", "/tmp/db.json")
+
+CSV_FILE = "tarjetas.csv"
+
+# ============================================================
+# SETUP LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# INICIALIZACIÓN DE CLIENTES
+# ============================================================
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 ccs = []
 
-chats = [
-    "https://t.me/+IfbjKNvmKoczYjhh"
-    "https://t.me/+iWBtC_JCQ4I0NTFh"
-    "@viplunaticscrapper"
-]
-
-CSV_FILE = "tarjetas.csv"
-
-# Inclui solamente si ya hay una base para evitar duplicados
+# Incluir solamente si ya hay una base para evitar duplicados
 try:
     with open("cards.txt", "r") as r:
         temp_cards = r.read().splitlines()
@@ -36,24 +61,11 @@ except FileNotFoundError:
         "El archivo 'cards.txt' no se encontró. Se creará uno nuevo si se encuentran tarjetas."
     )
 
-# ============================================================
-# CONFIGURACIÓN - VARIABLES DE ENTORNO (Railway)
-# ======================================================
-# ============================================================
-# VALIDAR CREDENCIALES
-# ============================================================
-
 
 # ============================================================
-# SETUP
+# CARGAR BASE DE DATOS DE BINs
 # ============================================================
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-# Cargar base de datos de BINs
 def load_bin_database():
     """Carga el CSV de tarjetas en un diccionario"""
     bin_db = {}
@@ -80,6 +92,10 @@ def load_bin_database():
 BIN_DATABASE = load_bin_database()
 
 
+# ============================================================
+# CLASE DE BASE DE DATOS SIMPLE
+# ============================================================
+
 class SimpleDB:
     def __init__(self):
         self.data = self.load()
@@ -94,12 +110,11 @@ class SimpleDB:
         return {
             "last_ids": {},
             "stats": {"total_cards": 0, "total_scans": 0},
-            "processed_cards": [],  # Para no repetir tarjetas
+            "processed_cards": [],
         }
 
     def save(self):
         try:
-            # Crear directorio si no existe
             os.makedirs(os.path.dirname(DB_VOLUME), exist_ok=True)
             with open(DB_VOLUME, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, indent=2)
@@ -122,7 +137,6 @@ class SimpleDB:
         if "processed_cards" not in self.data:
             self.data["processed_cards"] = []
         self.data["processed_cards"].append(card_number)
-        # Mantener solo últimas 10000 para no crecer infinito
         if len(self.data["processed_cards"]) > 10000:
             self.data["processed_cards"] = self.data["processed_cards"][-10000:]
         self.save()
@@ -152,7 +166,6 @@ CARD_PATTERN = re.compile(r"\d{16}\D*\d{2}\D*\d{2,4}\D*\d{3,4}")
 
 def get_bin_info(card_number):
     """Obtiene info del BIN desde la base de datos"""
-    # Probar con 6 dígitos primero, luego 5, luego 4
     for length in [6, 5, 4]:
         bin_code = card_number[:length]
         if bin_code in BIN_DATABASE:
@@ -172,29 +185,27 @@ def format_card_message(card_data):
     card_num, month, year, cvv = parts
     bin_info = get_bin_info(card_num)
 
-    # Crear versión censurada
     censored = f"{card_num[:12]}xxxx|{month}|{year}|xxx"
 
-    # Info del BIN
     if bin_info:
         nivel = bin_info.get("nivel", "")
         tipo = bin_info.get("tipo", "Desconocido")
         banco = bin_info.get("banco", "Desconocido")
         pais = bin_info.get("pais", "Desconocido")
         brand = bin_info.get("brand", "Desconocido")
-        bin = bin_info.get("bin", "Desconocido")
+        bin_code = bin_info.get("bin", "Desconocido")
     else:
         tipo = "Desconocido"
         banco = "Desconocido"
         pais = "Desconocido"
         brand = "Desconocido"
-        bin = "Desconocido"
+        bin_code = "Desconocido"
 
     message = (
-        f"Bin: #{bin}\n"
+        f"Bin: #{bin_code}\n"
         f"<code>{card_data}</code>\n"
         f"<code>{censored}</code>\n"
-        f"Bin: <code>{bin}</code>\n"
+        f"Bin: <code>{bin_code}</code>\n"
         f"Tipo: {tipo} | {brand}\n"
         f"Nivel: {nivel}\n"
         f"Banco: {banco}\n"
@@ -228,7 +239,6 @@ def extract_cards(text):
                 logger.warning(f"⚠️ Error procesando tarjeta: {match}")
                 continue
 
-    # Eliminar duplicados en el mismo mensaje
     return list(set(cards))
 
 
@@ -248,7 +258,6 @@ async def resolve_chat(chat_id):
 async def send_card_immediately(card_data, source=""):
     """Envía UNA tarjeta inmediatamente al bot"""
     try:
-        # Verificar si ya fue enviada
         card_num = card_data.split("|")[0]
         if db.is_card_processed(card_num):
             return False
@@ -257,14 +266,12 @@ async def send_card_immediately(card_data, source=""):
         if not message:
             return False
 
-        # Agregar encabezado
         full_message = f"💳 <b>OLIMPO SCRAPPER</b>\n{message}"
 
         await app.send_message(
             DESTINATION_CHAT, full_message, parse_mode=ParseMode.HTML
         )
 
-        # Marcar como procesada
         db.mark_card_processed(card_num)
         db.add_cards(1)
 
@@ -295,14 +302,12 @@ async def scrape_chat_realtime(chat_id):
             if text:
                 cards = extract_cards(text)
 
-                # Enviar cada tarjeta inmediatamente
                 for card in cards:
                     success = await send_card_immediately(card, f"Chat {chat_id}")
                     if success:
                         new_cards_count += 1
-                    await asyncio.sleep(0.5)  # Pequeño delay entre envíos
+                    await asyncio.sleep(0.5)
 
-                # Si encontramos muchas tarjetas, pausar un poco
                 if len(cards) > 5:
                     await asyncio.sleep(2)
 
@@ -324,7 +329,6 @@ async def join_chat_if_needed(chat_id):
 # ============================================================
 # SCANNER PRINCIPAL
 # ============================================================
-
 
 async def auto_scanner():
     await asyncio.sleep(5)
@@ -358,7 +362,7 @@ async def auto_scanner():
                 if new_count > 0:
                     logger.info(f"  Chat {chat_id}: {new_count} nuevas tarjetas")
 
-                await asyncio.sleep(3)  # Entre chats
+                await asyncio.sleep(3)
 
             if total_new > 0:
                 logger.info(f"✅ Total nuevas tarjetas: {total_new}")
@@ -376,7 +380,6 @@ async def auto_scanner():
 # ============================================================
 # COMANDOS DEL BOT
 # ============================================================
-
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_cmd(client, message):
@@ -449,7 +452,6 @@ async def stats_cmd(client, message):
 # MAIN
 # ============================================================
 
-
 async def main():
     print("=" * 60)
     print("AUTO SCRAPER BOT - REALTIME HITS")
@@ -475,94 +477,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-def load_bin_database():
-    """Carga el CSV de tarjetas en un diccionario"""
-    bin_db = {}
-    try:
-        with open(CSV_FILE, "r", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                bin_code = row["bin"].strip()
-                if bin_code:
-                    bin_db[bin_code] = {
-                        "brand": row.get("brand", "Desconocido"),
-                        "tipo": row.get("tipo", "Desconocido"),
-                        "nivel": row.get("nivel", ""),
-                        "banco": row.get("Banco", "Desconocido"),
-                        "pais": row.get("país", "Desconocido"),
-                        "bin": row.get("bin", "Desconocido"),
-                    }
-        logger.info(f"✅ Base de datos BIN cargada: {len(bin_db)} entradas")
-    except Exception as e:
-        logger.error(f"❌ Error cargando CSV: {e}")
-    return bin_db
-
-
-@client.on(events.NewMessage(chats=chats, func=lambda x: getattr(x, "text")))
-async def new_message_handler(event):
-    text = event.text
-    if event.reply_markup:
-        markup_text = event.reply_markup.stringify()
-        urls = getUrl(markup_text)
-        if urls:
-            try:
-                response = requests.get(urls[0])
-                response.raise_for_status()
-                text = response.text
-            except requests.exceptions.RequestException as e:
-                print(f"Error al obtener contenido de la URL: {e}")
-                return
-        else:
-            return
-
-    cards = getcards(text)
-    if not cards:
-        return
-
-    cc, mes, ano, cvv = cards
-
-    if cc in ccs:
-        return
-
-    ccs.append(cc)
-
-    try:
-        bin_response = requests.get(f"{cc[:6]}")
-        bin_response.raise_for_status()
-        bin_code = bin_response.row()
-    except requests.exceptions.RequestException as e:
-        print(f"Error al obtener información BIN: {e}")
-        bin_code = {
-            "brand": row.get("brand", "Desconocido"),
-            "tipo": row.get("tipo", "Desconocido"),
-            "nivel": row.get("nivel", "Desconocido"),
-            "banco": row.get("banco", "Desconocido"),
-            "pais": row.get("pais", "Desconocido"),
-            "bin": row.get("bin", "Desconocido"),
-        }
-
-    fullinfo = f"{cc}|{mes}|{ano}|{cvv}"
-    message_text = f"""
-<b>OLIMPO SCRAPPER</b>
-BIN: <code>{bin}<code>
-CC: <code>{cc}|{mes}|{ano}|{cvv}<code>
-MARCA: {bin_code.get('brand', 'Desconocido')}
-TIPO: {bin_code.get('tipo', 'Desconocido')}
-NIVEL: {bin_code.get('nivel', 'Desconocido')}
-BANCO: {bin_code.get('banco', 'Desconocido')}
-PAIS: {bin_code.get('pais', 'Desconocido')}
-"""
-    print(fullinfo)
-    with open("tarjetas.csv", "a") as w:
-        w.write(fullinfo + "\n", parse_mode="HTML")
-    await client.send_message(SEND_CHAT, message_text, link_preview=False)
-
-
-@client.on(events.NewMessage(outgoing=True, pattern=re.compile(r".lives")))
-async def send_cards_file(event):
-    await event.reply(file="cards.txt")
-
-
-client.start()
-client.run_until_disconnected()
