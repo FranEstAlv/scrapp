@@ -243,6 +243,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
     message = (
         f"<b>OLIMPO SCRAPP</b>\n"
         f"💳 <b>SCRAPPER CCS</b>\n"
+        f"━━━━━━━━\n"
         f"<blockquote>{censored}</blockquote>\n"
         f"BIN: {bin_code_found}\n"
         f"Tipo: {tipo}\n"
@@ -250,6 +251,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"Nivel: {nivel}\n"
         f"Banco: {banco}\n"
         f"País: {pais}"
+        f"━━━━━━━━\n"
     )
 
     return message
