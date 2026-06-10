@@ -10,6 +10,7 @@ from defs import getUrl, getcards
 API_ID = "35913593"
 API_HASH = "3b68bfcc6355ae25c893165a24dfa821"
 SESSION_STRING = os.environ.get("SESSION_STRING")
+SEND_CHAT = "-1003936831735"
 
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 ccs = []
