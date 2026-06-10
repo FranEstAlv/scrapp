@@ -7,9 +7,10 @@ import logging
 import hashlib
 
 try:
-    asyncio.get_event_loop()
+    APP_LOOP = asyncio.get_event_loop()
 except RuntimeError:
-    asyncio.set_event_loop(asyncio.new_event_loop())
+    APP_LOOP = asyncio.new_event_loop()
+    asyncio.set_event_loop(APP_LOOP)
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
@@ -244,14 +245,13 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
 
     message = (
         f"OLIMPO SCRAPP\n"
-        f"💳 <b>SERIE SCRAPPEADA</b>\n"
+        f"💳 Tarjeta Detectada\n"
         f"<blockquote>{censored}</blockquote>\n"
         f"BIN: {bin_code_found}\n"
-        f"Tipo: {tipo}\n"
-        f"Marca: {brand}\n"
+        f"Tipo: {tipo} | Marca: {brand}\n"
         f"Nivel: {nivel}\n"
         f"Banco: {banco}\n"
-        f"País: {pais}\n"
+        f"País: {pais}"
     )
 
     return message
@@ -573,15 +573,20 @@ async def main() -> None:
     scanner_task: Optional[asyncio.Task] = None
 
     try:
+        logger.info("🚀 Iniciando clientes de Telegram...")
         await user.start()
+        logger.info("✅ Cliente de usuario iniciado correctamente.")
         await app.start()
-        logger.info("✅ Clientes de Telegram iniciados correctamente.")
+        logger.info("✅ Cliente bot iniciado correctamente.")
 
         scanner_task = asyncio.create_task(auto_scanner())
         logger.info("🤖 Bot en ejecución. Presione Ctrl+C para detenerlo.")
         await asyncio.Event().wait()
     except (KeyboardInterrupt, asyncio.CancelledError):
         logger.info("Deteniendo bot...")
+    except Exception:
+        logger.exception("❌ Error fatal durante el arranque o ejecución del bot.")
+        raise
     finally:
         if scanner_task:
             scanner_task.cancel()
@@ -598,4 +603,8 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        APP_LOOP.run_until_complete(main())
+    finally:
+        APP_LOOP.run_until_complete(APP_LOOP.shutdown_asyncgens())
+        APP_LOOP.close()
