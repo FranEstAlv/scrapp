@@ -241,11 +241,12 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         bin_code_found = bin_info.get("bin", "Desconocido")
 
     message = (
-        f"OLIMPO SCRAPP\n"
-        f"💳 Tarjeta Detectada\n"
+        f"<b>OLIMPO SCRAPP</b>\n"
+        f"💳 <b>SCRAPPER CCS</b>\n"
         f"<blockquote>{censored}</blockquote>\n"
         f"BIN: {bin_code_found}\n"
-        f"Tipo: {tipo} | Marca: {brand}\n"
+        f"Tipo: {tipo}\n"
+        f"Marca: {brand}\n"
         f"Nivel: {nivel}\n"
         f"Banco: {banco}\n"
         f"País: {pais}"
