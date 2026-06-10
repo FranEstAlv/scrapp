@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import hashlib
+import html
 
 APP_LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(APP_LOOP)
@@ -48,6 +49,76 @@ CHATS_TO_SCRAPE: List[str] = [
 CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/tmp/db.json")
 CSV_FILE: str = "tarjetas.csv"
+
+COUNTRY_CODE_BY_NAME = {
+    "ARGENTINA": "AR",
+    "AUSTRALIA": "AU",
+    "AUSTRIA": "AT",
+    "BANGLADESH": "BD",
+    "BELGIUM": "BE",
+    "BRAZIL": "BR",
+    "BULGARIA": "BG",
+    "CANADA": "CA",
+    "CHILE": "CL",
+    "CHINA": "CN",
+    "COLOMBIA": "CO",
+    "COSTA RICA": "CR",
+    "CROATIA": "HR",
+    "DENMARK": "DK",
+    "DOMINICAN REPUBLIC": "DO",
+    "ECUADOR": "EC",
+    "EGYPT": "EG",
+    "FINLAND": "FI",
+    "FRANCE": "FR",
+    "GERMANY": "DE",
+    "GREECE": "GR",
+    "GUATEMALA": "GT",
+    "HONG KONG": "HK",
+    "INDIA": "IN",
+    "INDONESIA": "ID",
+    "IRELAND": "IE",
+    "ITALY": "IT",
+    "JAPAN": "JP",
+    "KOREA, REPUBLIC OF": "KR",
+    "LEBANON": "LB",
+    "MALAYSIA": "MY",
+    "MEXICO": "MX",
+    "NETHERLANDS": "NL",
+    "NIGERIA": "NG",
+    "NORWAY": "NO",
+    "PAKISTAN": "PK",
+    "PANAMA": "PA",
+    "PERU": "PE",
+    "PHILIPPINES": "PH",
+    "POLAND": "PL",
+    "PORTUGAL": "PT",
+    "ROMANIA": "RO",
+    "RUSSIAN FEDERATION": "RU",
+    "SAUDI ARABIA": "SA",
+    "SERBIA": "RS",
+    "SINGAPORE": "SG",
+    "SOUTH AFRICA": "ZA",
+    "SPAIN": "ES",
+    "SWEDEN": "SE",
+    "SWITZERLAND": "CH",
+    "TAIWAN, PROVINCE OF CHINA": "TW",
+    "THAILAND": "TH",
+    "TURKEY": "TR",
+    "UKRAINE": "UA",
+    "UNITED ARAB EMIRATES": "AE",
+    "UNITED KINGDOM": "GB",
+    "UNITED STATES": "US",
+    "VENEZUELA, BOLIVARIAN REPUBLIC OF": "VE",
+    "VIET NAM": "VN",
+}
+
+
+def country_flag(country_name: str) -> str:
+    """Devuelve la bandera emoji para países conocidos en la base BIN."""
+    country_code = COUNTRY_CODE_BY_NAME.get((country_name or "").strip().upper())
+    if not country_code:
+        return ""
+    return "".join(chr(ord(char) + 127397) for char in country_code)
 
 # --- Configuración de Logging ---
 logging.basicConfig(
@@ -240,19 +311,20 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         pais = bin_info.get("pais", "Desconocido")
         bin_code_found = bin_info.get("bin", "Desconocido")
 
+    country_with_flag = f"{pais} {country_flag(pais)}".strip()
+
     message = (
-        f"<b>OLIMPO SCRAPP</b>\n"
-        f"💳 <b>SCRAPPER CCS</b>\n"
-        f"━━━━━━━━\n"
-        f"<blockquote>{censored}</blockquote>\n"
-        f"BIN: {bin_code_found}\n"
-        f"Tipo: {tipo}\n"
-        f"Marca: {brand}\n"
-        f"Nivel: {nivel}\n"
-        f"Banco: {banco}\n"
-        f"País: {pais}"
-        f"━━━━━━━━\n"
-        f"<b>OLIMPO BINS</b>"
+        f"<b>OLIMPO SCRAPPER</b>\n\n"
+        f"<b>#<code>{html.escape(bin_code_found)}</code></b>\n"
+        f"<b>━━━━━━━━</b>\n"
+        f"<b>Serie= <code>{html.escape(censored)}</code></b>\n"
+        f"<b>Bin= <code>{html.escape(bin_code_found)}</code></b>\n"
+        f"<b>Banco= {html.escape(banco)}</b>\n"
+        f"<b>Marca= {html.escape(brand)}</b>\n"
+        f"<b>Tipo= {html.escape(tipo)}</b>\n"
+        f"<b>Nivel= {html.escape(nivel)}</b>\n"
+        f"<b>País= {html.escape(country_with_flag)}</b>\n"
+        f"<b>━━━━━━━━</b>"
     )
 
     return message
