@@ -2,10 +2,11 @@ import asyncio
 import os
 import re
 import csv
-import json
+import sqlite3
 import logging
 import hashlib
 import html
+import tempfile
 
 APP_LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(APP_LOOP)
@@ -49,7 +50,8 @@ CHATS_TO_SCRAPE: List[str] = [
     "@viplunaticscrapper",
 ]
 CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
-DB_VOLUME: str = os.environ.get("DB_VOLUME", "/tmp/db.json")
+DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
+DB_FILENAME: str = os.environ.get("DB_FILENAME", "scrapp.sqlite3")
 CSV_FILE: str = "tarjetas.csv"
 
 COUNTRY_CODE_BY_NAME = {
@@ -134,75 +136,220 @@ logger = logging.getLogger(__name__)
 
 class SimpleDB:
     """
-    Clase para manejar la persistencia de datos del bot (últimos IDs, estadísticas, tarjetas procesadas).
-    Utiliza un archivo JSON para almacenar los datos.
+    Maneja la persistencia de datos del bot en una base SQLite ubicada en el
+    volumen persistente de Railway (DB_VOLUME, por defecto /data).
     """
-    def __init__(self, db_path: str = DB_VOLUME):
-        self.db_path = db_path
+
+    def __init__(self, db_volume: str = DB_VOLUME, db_filename: str = DB_FILENAME):
+        self.db_path = self._resolve_db_path(db_volume, db_filename)
         self.data = self._load()
 
+    @staticmethod
+    def _resolve_db_path(db_volume: str, db_filename: str) -> str:
+        """Resuelve DB_VOLUME como directorio persistente y devuelve el archivo SQLite."""
+        if os.path.splitext(db_volume)[1].lower() in {".db", ".sqlite", ".sqlite3"}:
+            db_path = db_volume
+            db_dir = os.path.dirname(db_path)
+        else:
+            db_dir = db_volume
+            db_path = os.path.join(db_dir, db_filename)
+
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        return db_path
+
+    def _connect(self) -> sqlite3.Connection:
+        """Abre una conexión SQLite con filas accesibles por nombre."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
     def _load(self) -> Dict[str, Any]:
-        """Carga los datos desde el archivo JSON."""
-        if os.path.exists(self.db_path):
-            try:
-                with open(self.db_path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError) as e:
-                logger.warning(f"⚠️ Error cargando DB desde '{self.db_path}': {e}. Iniciando con datos vacíos.")
-        return {
+        """Inicializa la DB SQLite y devuelve una vista cacheada compatible con el bot."""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS last_ids (
+                        chat_id TEXT PRIMARY KEY,
+                        message_id INTEGER NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS stats (
+                        key TEXT PRIMARY KEY,
+                        value INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS processed_cards (
+                        fingerprint TEXT PRIMARY KEY,
+                        processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_cards', 0)")
+                conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_scans', 0)")
+                conn.commit()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error inicializando DB SQLite en '{self.db_path}': {e}")
+
+        return self._snapshot()
+
+    def _snapshot(self) -> Dict[str, Any]:
+        """Lee los datos actuales de SQLite en el formato usado por los comandos."""
+        snapshot: Dict[str, Any] = {
             "last_ids": {},
             "stats": {"total_cards": 0, "total_scans": 0},
-            "processed_cards": [], # Almacena huellas SHA-256 para evitar duplicados sin guardar datos sensibles
+            "processed_cards": [],
         }
 
-    def _save(self) -> None:
-        """Guarda los datos en el archivo JSON."""
         try:
-            db_dir = os.path.dirname(self.db_path)
-            if db_dir:
-                os.makedirs(db_dir, exist_ok=True)
-            with open(self.db_path, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, indent=2)
-        except OSError as e:
-            logger.error(f"❌ Error guardando DB en '{self.db_path}': {e}")
+            with self._connect() as conn:
+                snapshot["last_ids"] = {
+                    row["chat_id"]: row["message_id"]
+                    for row in conn.execute("SELECT chat_id, message_id FROM last_ids")
+                }
+                snapshot["stats"] = {
+                    row["key"]: row["value"]
+                    for row in conn.execute("SELECT key, value FROM stats")
+                }
+                snapshot["processed_cards"] = [
+                    row["fingerprint"]
+                    for row in conn.execute(
+                        "SELECT fingerprint FROM processed_cards ORDER BY processed_at DESC LIMIT 10000"
+                    )
+                ]
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error leyendo DB SQLite desde '{self.db_path}': {e}")
+
+        return snapshot
+
+    def _refresh_cache(self) -> None:
+        """Sincroniza la vista en memoria después de cada escritura."""
+        self.data = self._snapshot()
 
     def get_last_id(self, chat_id: int) -> int:
         """Obtiene el último ID de mensaje procesado para un chat específico."""
-        return self.data["last_ids"].get(str(chat_id), 0)
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT message_id FROM last_ids WHERE chat_id = ?",
+                    (str(chat_id),),
+                ).fetchone()
+            return int(row["message_id"]) if row else 0
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error consultando last_id para chat {chat_id}: {e}")
+            return 0
 
     def set_last_id(self, chat_id: int, message_id: int) -> None:
         """Establece el último ID de mensaje procesado para un chat específico."""
-        self.data["last_ids"][str(chat_id)] = message_id
-        self._save()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO last_ids (chat_id, message_id)
+                    VALUES (?, ?)
+                    ON CONFLICT(chat_id) DO UPDATE SET message_id = excluded.message_id
+                    """,
+                    (str(chat_id), message_id),
+                )
+                conn.commit()
+            self._refresh_cache()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error guardando last_id para chat {chat_id}: {e}")
 
     def is_card_processed(self, card_data: str) -> bool:
         """Verifica si la tarjeta ya fue procesada usando una huella irreversible."""
-        processed_cards = self.data.get("processed_cards", [])
         fingerprint = get_card_fingerprint(card_data)
-        # Se mantiene compatibilidad con registros antiguos que pudieran estar en texto plano.
-        return fingerprint in processed_cards or card_data in processed_cards
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM processed_cards WHERE fingerprint = ?",
+                    (fingerprint,),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error verificando tarjeta procesada: {e}")
+            return fingerprint in self.data.get("processed_cards", [])
 
     def mark_card_processed(self, card_data: str) -> None:
         """Marca una tarjeta como procesada sin persistir PAN/CVV en texto plano."""
-        if "processed_cards" not in self.data:
-            self.data["processed_cards"] = []
-
         fingerprint = get_card_fingerprint(card_data)
-        if fingerprint not in self.data["processed_cards"]:
-            self.data["processed_cards"].append(fingerprint)
-            # Limitar el tamaño de la lista para evitar el consumo excesivo de memoria.
-            # Un tamaño de 10000 es un compromiso. Para volúmenes muy altos, considerar una DB real.
-            if len(self.data["processed_cards"]) > 10000:
-                self.data["processed_cards"] = self.data["processed_cards"][-10000:]
-            self._save()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO processed_cards (fingerprint) VALUES (?)",
+                    (fingerprint,),
+                )
+                conn.commit()
+            self._refresh_cache()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error marcando tarjeta procesada: {e}")
 
     def add_cards_stats(self, count: int = 1) -> None:
         """Actualiza las estadísticas de tarjetas procesadas y escaneos."""
-        self.data.setdefault("stats", {"total_cards": 0, "total_scans": 0})
-        self.data["stats"]["total_cards"] += count
-        self.data["stats"]["total_scans"] += 1
-        self._save()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO stats (key, value) VALUES ('total_cards', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = value + excluded.value
+                    """,
+                    (count,),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO stats (key, value) VALUES ('total_scans', 1)
+                    ON CONFLICT(key) DO UPDATE SET value = value + 1
+                    """
+                )
+                conn.commit()
+            self._refresh_cache()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error actualizando estadísticas: {e}")
 
+    def export_csv(self) -> str:
+        """Exporta toda la información persistida a un CSV temporal dentro de DB_VOLUME."""
+        export_dir = os.path.join(os.path.dirname(self.db_path), "exports")
+        os.makedirs(export_dir, exist_ok=True)
+
+        fd, export_path = tempfile.mkstemp(
+            prefix="scrapp_db_",
+            suffix=".csv",
+            dir=export_dir,
+            text=True,
+        )
+
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f, self._connect() as conn:
+                writer = csv.writer(f)
+                writer.writerow(["table", "key", "value", "created_at"])
+
+                for row in conn.execute("SELECT chat_id, message_id FROM last_ids ORDER BY chat_id"):
+                    writer.writerow(["last_ids", row["chat_id"], row["message_id"], ""])
+
+                for row in conn.execute("SELECT key, value FROM stats ORDER BY key"):
+                    writer.writerow(["stats", row["key"], row["value"], ""])
+
+                for row in conn.execute(
+                    "SELECT fingerprint, processed_at FROM processed_cards ORDER BY processed_at DESC"
+                ):
+                    writer.writerow(["processed_cards", row["fingerprint"], "", row["processed_at"]])
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            if os.path.exists(export_path):
+                os.remove(export_path)
+            raise
+
+        return export_path
 
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
@@ -713,11 +860,13 @@ async def start_cmd(client: Client, message):
         f"<b>Chats monitoreados:</b>\n{chats_list_formatted}\n\n"
         f"💳 Envío: <b>Cola pausada, 1 mensaje cada {SEND_INTERVAL_SECONDS}s</b>\n"
         f"📊 Base BIN: <code>{CSV_FILE}</code> ({len(BIN_DATABASE)} entradas cargadas)\n"
+        f"💾 DB persistente: <code>{html.escape(db.db_path)}</code>\n"
         f"⏱️ Intervalo de escaneo: <code>{CHECK_INTERVAL}s</code>\n\n"
         f"<b>Comandos disponibles:</b>\n"
         f"/status - Ver estado actual del bot.\n"
         f"/force - Forzar un escaneo inmediato de todos los chats.\n"
         f"/stats - Mostrar estadísticas generales.\n"
+        f"/export_db - Exportar la base de datos en CSV.\n"
         f"/refresh_destination - Refrescar el destination chat.\n"
         f"/test - Enviar una tarjeta de prueba formateada.",
         parse_mode=ParseMode.HTML,
@@ -752,6 +901,7 @@ async def status_cmd(client: Client, message):
         f"<b>Intervalo de envío:</b> <code>{SEND_INTERVAL_SECONDS}s</code>\n"
         f"<b>Cola pendiente:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>\n"
         f"<b>Destination chat:</b> <code>{DESTINATION_CHAT_ID or DESTINATION_CHAT}</code>\n"
+        f"<b>DB persistente:</b> <code>{html.escape(db.db_path)}</code>\n"
         f"<b>Tarjetas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
         f"<b>Escaneos con hallazgos:</b> <code>{stats.get('total_scans', 0)}</code>\n"
         f"<b>Chats con progreso:</b> <code>{len(last_ids)}</code>",
@@ -793,6 +943,29 @@ async def stats_cmd(client: Client, message):
         f"<b>Mensajes pendientes en cola:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>",
         parse_mode=ParseMode.HTML,
     )
+
+
+@app.on_message(filters.command(["export_db", "exportdb"]))
+async def export_db_cmd(client: Client, message):
+    """Comando /export_db - Exporta la base de datos persistente en formato CSV."""
+    export_path: Optional[str] = None
+
+    try:
+        export_path = db.export_csv()
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=export_path,
+            caption="✅ Exportación de la base de datos en formato CSV.",
+        )
+    except Exception as e:
+        logger.exception(f"❌ Error exportando la DB a CSV: {e}")
+        await message.reply("❌ No se pudo exportar la base de datos en CSV. Revisa los logs del servicio.")
+    finally:
+        if export_path and os.path.exists(export_path):
+            try:
+                os.remove(export_path)
+            except OSError as e:
+                logger.warning(f"⚠️ No se pudo eliminar el CSV temporal '{export_path}': {e}")
 
 
 @app.on_message(filters.command("force"))
