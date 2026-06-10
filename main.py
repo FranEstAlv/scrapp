@@ -119,6 +119,7 @@ class SimpleDB:
         self.data["stats"]["total_scans"] += 1
         self._save()
 
+
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
     Carga la base de datos de BINs desde un archivo CSV.
@@ -134,18 +135,18 @@ def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
                     bin_db[bin_code] = {
                         "brand": row.get("brand", "Desconocido"),
                         "tipo": row.get("tipo", "Desconocido"),
-                        "nivel": row.get("nivel", ""), # Nivel puede estar vacío
+                        "nivel": row.get("nivel", ""),  # Nivel puede estar vacío
                         "banco": row.get("Banco", "Desconocido"),
                         "pais": row.get("país", "Desconocido"),
-                        "bin": bin_code, # Guardar el bin normalizado
+                        "bin": bin_code,  # Guardar el bin normalizado
                     }
         logger.info(f"✅ Base de datos BIN cargada: {len(bin_db)} entradas")
-    except Exception as e:
-        logger.error(f"❌ Archivo CSV de BINs no encontrado: '{csv_path}'. El bot funcionará sin información de BIN.")
+    except FileNotFoundError:
+        logger.warning(f"⚠️ Archivo CSV de BINs no encontrado: '{csv_path}'. El bot funcionará sin información de BIN.")
     except csv.Error as e:
-        logger.error(f"❌ Error al leer el archivo CSV de BINs '{csv_path}': {e}. El bot funcionará sin información de BIN.")
+        logger.warning(f"⚠️ Error al leer el archivo CSV de BINs '{csv_path}': {e}. El bot funcionará sin información de BIN.")
     except Exception as e:
-        logger.error(f"❌ Error inesperado al cargar BINs desde '{csv_path}': {e}. El bot funcionará sin información de BIN.")
+        logger.warning(f"⚠️ Error inesperado al cargar BINs desde '{csv_path}': {e}. El bot funcionará sin información de BIN.")
     return bin_db
 
 def get_bin_info(card_number: str, bin_database: Dict[str, Dict[str, str]]) -> Optional[Dict[str, str]]:
