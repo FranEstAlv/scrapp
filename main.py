@@ -48,6 +48,8 @@ CHATS_TO_SCRAPE: List[str] = [
     "https://t.me/+IfbjKNvmKoczYjhh",
     "https://t.me/+iWBtC_JCQ4I0NTFh",
     "@viplunaticscrapper",
+    "-1003636233013",
+    "-1003075577632"
 ]
 CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
