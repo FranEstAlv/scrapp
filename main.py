@@ -7,6 +7,7 @@ import logging
 import hashlib
 import html
 import tempfile
+from urllib.parse import urlparse
 
 APP_LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(APP_LOOP)
@@ -56,6 +57,7 @@ CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
 DB_FILENAME: str = os.environ.get("DB_FILENAME", "scrapp.sqlite3")
 CSV_FILE: str = "tarjetas.csv"
+IGNORED_LINK_DOMAINS: set[str] = {"telegra.ph"}
 
 COUNTRY_CODE_BY_NAME = {
     "ARGENTINA": "AR",
@@ -481,6 +483,32 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
 
     return message
 
+
+def extract_urls(text: str) -> List[str]:
+    """Extrae URLs HTTP/HTTPS de un texto para aplicar filtros de scraping."""
+    if not text:
+        return []
+
+    return re.findall(r"https?://[^\s<>()\[\]{}]+", text, flags=re.IGNORECASE)
+
+
+def url_matches_ignored_domain(url: str) -> bool:
+    """Indica si una URL pertenece a un dominio que debe saltarse durante el scraping."""
+    try:
+        hostname = (urlparse(url).hostname or "").lower().rstrip(".")
+    except ValueError:
+        return False
+
+    return any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in IGNORED_LINK_DOMAINS
+    )
+
+
+def should_skip_text_for_ignored_links(text: str) -> bool:
+    """Evita procesar mensajes que apunten a dominios excluidos como telegra.ph."""
+    return any(url_matches_ignored_domain(url) for url in extract_urls(text))
+
 def extract_cards(text: str) -> List[str]:
     """
     Extrae tarjetas de crédito (formato CC) del texto proporcionado.
@@ -747,6 +775,13 @@ async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
 
             text = message.text or message.caption
             if text:
+                if should_skip_text_for_ignored_links(text):
+                    logger.info(
+                        f"Saltando mensaje {message.id} de chat {chat_id}: "
+                        "contiene enlace de dominio excluido (telegra.ph)."
+                    )
+                    continue
+
                 cards_found = extract_cards(text)
 
                 for card in cards_found:
@@ -863,6 +898,7 @@ async def start_cmd(client: Client, message):
         f"<b>Chats monitoreados:</b>\n{chats_list_formatted}\n\n"
         f"💳 Envío: <b>Cola pausada, 1 mensaje cada {SEND_INTERVAL_SECONDS}s</b>\n"
         f"📊 Base BIN: <code>{CSV_FILE}</code> ({len(BIN_DATABASE)} entradas cargadas)\n"
+        f"🔕 Dominios saltados: <code>{html.escape(', '.join(sorted(IGNORED_LINK_DOMAINS)))}</code>\n"
         f"💾 DB persistente: <code>{html.escape(db.db_path)}</code>\n"
         f"⏱️ Intervalo de escaneo: <code>{CHECK_INTERVAL}s</code>\n\n"
         f"<b>Comandos disponibles:</b>\n"
@@ -899,6 +935,7 @@ async def status_cmd(client: Client, message):
         f"📡 <b>Estado del bot</b>\n\n"
         f"<b>Scraper:</b> <code>{scraper_status}</code>\n"
         f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
+        f"<b>Dominios saltados:</b> <code>{html.escape(', '.join(sorted(IGNORED_LINK_DOMAINS)))}</code>\n"
         f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
         f"<b>Intervalo de escaneo:</b> <code>{CHECK_INTERVAL}s</code>\n"
         f"<b>Intervalo de envío:</b> <code>{SEND_INTERVAL_SECONDS}s</code>\n"
