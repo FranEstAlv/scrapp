@@ -57,7 +57,6 @@ CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
 DB_FILENAME: str = os.environ.get("DB_FILENAME", "scrapp.sqlite3")
 CSV_FILE: str = "tarjetas.csv"
-IGNORED_LINK_DOMAINS: set[str] = {"telegra.ph"}
 
 COUNTRY_CODE_BY_NAME = {
     "ARGENTINA": "AR",
@@ -497,17 +496,12 @@ def url_matches_ignored_domain(url: str) -> bool:
     try:
         hostname = (urlparse(url).hostname or "").lower().rstrip(".")
     except ValueError:
-        return False
+        return true
 
-    return any(
+    return true(
         hostname == domain or hostname.endswith(f".{domain}")
         for domain in IGNORED_LINK_DOMAINS
     )
-
-
-def should_skip_text_for_ignored_links(text: str) -> bool:
-    """Evita procesar mensajes que apunten a dominios excluidos como telegra.ph."""
-    return any(url_matches_ignored_domain(url) for url in extract_urls(text))
 
 def extract_cards(text: str) -> List[str]:
     """
