@@ -48,6 +48,7 @@ DESTINATION_REFRESH_PENDING: bool = False
 
 CHATS_TO_SCRAPE: List[str] = [
     "@viplunaticscrapper",
+    "@AsukaScr",
     "-1003636233013",
     "-1003075577632",
     "-1003658677167",
