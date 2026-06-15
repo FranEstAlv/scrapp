@@ -47,8 +47,6 @@ DESTINATION_CHAT_ID: Optional[int] = DESTINATION_CHAT if isinstance(DESTINATION_
 DESTINATION_REFRESH_PENDING: bool = False
 
 CHATS_TO_SCRAPE: List[str] = [
-    "https://t.me/+IfbjKNvmKoczYjhh",
-    "https://t.me/+iWBtC_JCQ4I0NTFh",
     "@viplunaticscrapper",
     "-1003636233013",
     "-1003075577632",
