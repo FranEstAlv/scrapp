@@ -498,7 +498,7 @@ def url_matches_ignored_domain(url: str) -> bool:
     except ValueError:
         return true
 
-    return true(
+    return True(
         hostname == domain or hostname.endswith(f".{domain}")
         for domain in IGNORED_LINK_DOMAINS
     )
