@@ -52,7 +52,10 @@ CHATS_TO_SCRAPE: List[str] = [
     "@viplunaticscrapper",
     "-1003636233013",
     "-1003075577632",
-    "-1003658677167"
+    "-1003658677167",
+    "-1002408067156",
+    "-1002271492504",
+    "-1002328190486"
 ]
 CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
