@@ -7,14 +7,15 @@ import logging
 import hashlib
 import html
 import tempfile
-from urllib.parse import urlparse
+import aiohttp
+from urllib.parse import urlparse, urljoin
+from typing import Dict, List, Optional, Any, Union
 
 APP_LOOP = asyncio.new_event_loop()
 asyncio.set_event_loop(APP_LOOP)
 
 from pyrogram import Client, filters
 from pyrogram.enums import ParseMode
-from typing import Dict, List, Optional, Any, Union
 
 
 API_ID_STR = os.environ.get("API_ID")
@@ -57,6 +58,23 @@ CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
 DB_FILENAME: str = os.environ.get("DB_FILENAME", "scrapp.sqlite3")
 CSV_FILE: str = "tarjetas.csv"
+
+# Dominios que deben ser procesados para extraer tarjetas
+PROCESSABLE_LINK_DOMAINS: List[str] = [
+    "telegram.ph",
+    "telegra.ph",
+    "te.legra.ph"
+]
+
+# Dominios que deben ser ignorados (si se quiere mantener esta funcionalidad)
+IGNORED_LINK_DOMAINS: List[str] = [
+    # Aquí se pueden agregar dominios que se quieren ignorar completamente
+]
+
+# Configuración de scraping de enlaces
+MAX_LINK_CONTENT_SIZE: int = 1024 * 1024  # 1MB máximo para contenido de enlaces
+LINK_REQUEST_TIMEOUT: int = 10  # 10 segundos timeout para requests HTTP
+LINK_MAX_RETRIES: int = 2  # Máximo de reintentos para scraping de enlaces
 
 COUNTRY_CODE_BY_NAME = {
     "ARGENTINA": "AR",
@@ -196,8 +214,17 @@ class SimpleDB:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS processed_links (
+                        url TEXT PRIMARY KEY,
+                        processed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
                 conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_cards', 0)")
                 conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_scans', 0)")
+                conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('links_processed', 0)")
                 conn.commit()
         except sqlite3.Error as e:
             logger.error(f"❌ Error inicializando DB SQLite en '{self.db_path}': {e}")
@@ -208,8 +235,9 @@ class SimpleDB:
         """Lee los datos actuales de SQLite en el formato usado por los comandos."""
         snapshot: Dict[str, Any] = {
             "last_ids": {},
-            "stats": {"total_cards": 0, "total_scans": 0},
+            "stats": {"total_cards": 0, "total_scans": 0, "links_processed": 0},
             "processed_cards": [],
+            "processed_links": [],
         }
 
         try:
@@ -226,6 +254,12 @@ class SimpleDB:
                     row["fingerprint"]
                     for row in conn.execute(
                         "SELECT fingerprint FROM processed_cards ORDER BY processed_at DESC LIMIT 10000"
+                    )
+                ]
+                snapshot["processed_links"] = [
+                    row["url"]
+                    for row in conn.execute(
+                        "SELECT url FROM processed_links ORDER BY processed_at DESC LIMIT 10000"
                     )
                 ]
         except sqlite3.Error as e:
@@ -295,6 +329,34 @@ class SimpleDB:
         except sqlite3.Error as e:
             logger.error(f"❌ Error marcando tarjeta procesada: {e}")
 
+    def is_link_processed(self, url: str) -> bool:
+        """Verifica si un enlace ya fue procesado."""
+        normalized_url = normalize_url(url)
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM processed_links WHERE url = ?",
+                    (normalized_url,),
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error verificando enlace procesado: {e}")
+            return normalized_url in self.data.get("processed_links", [])
+
+    def mark_link_processed(self, url: str) -> None:
+        """Marca un enlace como procesado."""
+        normalized_url = normalize_url(url)
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO processed_links (url) VALUES (?)",
+                    (normalized_url,),
+                )
+                conn.commit()
+            self._refresh_cache()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error marcando enlace procesado: {e}")
+
     def add_cards_stats(self, count: int = 1) -> None:
         """Actualiza las estadísticas de tarjetas procesadas y escaneos."""
         try:
@@ -316,6 +378,22 @@ class SimpleDB:
             self._refresh_cache()
         except sqlite3.Error as e:
             logger.error(f"❌ Error actualizando estadísticas: {e}")
+
+    def add_links_stats(self, count: int = 1) -> None:
+        """Actualiza las estadísticas de enlaces procesados."""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO stats (key, value) VALUES ('links_processed', ?)
+                    ON CONFLICT(key) DO UPDATE SET value = value + excluded.value
+                    """,
+                    (count,),
+                )
+                conn.commit()
+            self._refresh_cache()
+        except sqlite3.Error as e:
+            logger.error(f"❌ Error actualizando estadísticas de enlaces: {e}")
 
     def export_csv(self) -> str:
         """Exporta toda la información persistida a un CSV temporal dentro de DB_VOLUME."""
@@ -344,6 +422,11 @@ class SimpleDB:
                     "SELECT fingerprint, processed_at FROM processed_cards ORDER BY processed_at DESC"
                 ):
                     writer.writerow(["processed_cards", row["fingerprint"], "", row["processed_at"]])
+
+                for row in conn.execute(
+                    "SELECT url, processed_at FROM processed_links ORDER BY processed_at DESC"
+                ):
+                    writer.writerow(["processed_links", row["url"], "", row["processed_at"]])
         except Exception:
             try:
                 os.close(fd)
@@ -354,6 +437,7 @@ class SimpleDB:
             raise
 
         return export_path
+
 
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
@@ -401,6 +485,7 @@ def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
 
     return bin_db
 
+
 def get_card_fingerprint(card_data: str) -> str:
     """Devuelve una huella SHA-256 para deduplicar sin guardar datos sensibles completos."""
     return hashlib.sha256(card_data.encode("utf-8")).hexdigest()
@@ -423,6 +508,7 @@ def get_bin_info(card_number: str, bin_database: Dict[str, Dict[str, str]]) -> O
             if bin_code in bin_database:
                 return bin_database[bin_code]
     return None
+
 
 def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]]) -> Optional[str]:
     """
@@ -491,17 +577,143 @@ def extract_urls(text: str) -> List[str]:
     return re.findall(r"https?://[^\s<>()\[\]{}]+", text, flags=re.IGNORECASE)
 
 
-def url_matches_ignored_domain(url: str) -> bool:
-    """Indica si una URL pertenece a un dominio que debe saltarse durante el scraping."""
+def normalize_url(url: str) -> str:
+    """Normaliza una URL eliminando parámetros de consulta y fragmentos."""
+    try:
+        parsed = urlparse(url)
+        # Mantener solo esquema, netloc y path
+        normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        return normalized.rstrip("/")
+    except Exception:
+        return url
+
+
+def url_matches_domain(url: str, domains: List[str]) -> bool:
+    """Indica si una URL pertenece a alguno de los dominios especificados."""
     try:
         hostname = (urlparse(url).hostname or "").lower().rstrip(".")
     except ValueError:
-        return true
+        return False
 
-    return True(
-        hostname == domain or hostname.endswith(f".{domain}")
-        for domain in IGNORED_LINK_DOMAINS
-    )
+    for domain in domains:
+        if hostname == domain or hostname.endswith(f".{domain}"):
+            return True
+    return False
+
+
+def url_matches_ignored_domain(url: str) -> bool:
+    """Indica si una URL pertenece a un dominio que debe saltarse durante el scraping."""
+    return url_matches_domain(url, IGNORED_LINK_DOMAINS)
+
+
+def url_matches_processable_domain(url: str) -> bool:
+    """Indica si una URL pertenece a un dominio que debe ser procesado para extraer tarjetas."""
+    return url_matches_domain(url, PROCESSABLE_LINK_DOMAINS)
+
+
+def should_skip_text_for_ignored_links(text: str) -> bool:
+    """Determina si un texto debe ser ignorado por contener enlaces a dominios excluidos."""
+    urls = extract_urls(text)
+    for url in urls:
+        if url_matches_ignored_domain(url):
+            return True
+    return False
+
+
+async def fetch_url_content(url: str, session: aiohttp.ClientSession) -> Optional[str]:
+    """Descarga el contenido de una URL con manejo de errores y límites."""
+    if not url_matches_processable_domain(url):
+        logger.debug(f"URL no procesable (dominio no incluido): {url}")
+        return None
+
+    if db.is_link_processed(url):
+        logger.debug(f"URL ya procesada: {url}")
+        return None
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0"
+    }
+
+    for attempt in range(LINK_MAX_RETRIES + 1):
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=LINK_REQUEST_TIMEOUT)) as response:
+                if response.status != 200:
+                    logger.warning(f"URL respondió con código {response.status}: {url}")
+                    continue
+
+                content_type = response.headers.get("Content-Type", "").lower()
+                if "text/html" not in content_type and "text/plain" not in content_type:
+                    logger.debug(f"URL no es texto (Content-Type: {content_type}): {url}")
+                    continue
+
+                content = await response.text(encoding="utf-8", errors="ignore")
+                
+                # Limitar el tamaño del contenido procesado
+                if len(content) > MAX_LINK_CONTENT_SIZE:
+                    content = content[:MAX_LINK_CONTENT_SIZE]
+                    logger.debug(f"Contenido truncado a {MAX_LINK_CONTENT_SIZE} bytes: {url}")
+
+                logger.info(f"✅ Contenido descargado exitosamente: {url} ({len(content)} bytes)")
+                db.mark_link_processed(url)
+                db.add_links_stats(1)
+                return content
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout al descargar URL (intento {attempt + 1}/{LINK_MAX_RETRIES + 1}): {url}")
+            if attempt < LINK_MAX_RETRIES:
+                await asyncio.sleep(1)
+            else:
+                logger.error(f"❌ Falló después de {LINK_MAX_RETRIES + 1} intentos: {url}")
+                break
+        except aiohttp.ClientError as e:
+            logger.warning(f"Error HTTP al descargar URL (intento {attempt + 1}/{LINK_MAX_RETRIES + 1}): {url} - {e}")
+            if attempt < LINK_MAX_RETRIES:
+                await asyncio.sleep(1)
+            else:
+                logger.error(f"❌ Falló después de {LINK_MAX_RETRIES + 1} intentos: {url}")
+                break
+        except Exception as e:
+            logger.error(f"Error inesperado al descargar URL: {url} - {e}")
+            break
+
+    return None
+
+
+async def extract_cards_from_url(url: str, session: aiohttp.ClientSession) -> List[str]:
+    """Extrae tarjetas de crédito del contenido de una URL."""
+    content = await fetch_url_content(url, session)
+    if not content:
+        return []
+
+    # Buscar tarjetas en el contenido HTML/texto
+    cards = extract_cards(content)
+    
+    # También buscar en atributos HTML que puedan contener datos de tarjetas
+    # Buscar patrones comunes en HTML
+    html_patterns = [
+        r'data-card="([^"]+)"',
+        r'card-number["\']?\s*:\s*["\']?([\d\s\|]+)',
+        r'cc["\']?\s*:\s*["\']?([\d\s\|]+)',
+        r'credit["\']?\s*:\s*["\']?([\d\s\|]+)',
+    ]
+    
+    for pattern in html_patterns:
+        matches = re.findall(pattern, content, re.IGNORECASE)
+        for match in matches:
+            # Limpiar espacios y caracteres extraños
+            cleaned = re.sub(r'\s+', '', match)
+            if re.match(r'^\d{16}[\|/]\d{2}[\|/]\d{2,4}[\|/]\d{3,4}$', cleaned):
+                cards.append(cleaned.replace('/', '|'))
+    
+    # Eliminar duplicados
+    return list(set(cards))
+
 
 def extract_cards(text: str) -> List[str]:
     """
@@ -536,8 +748,32 @@ def extract_cards(text: str) -> List[str]:
             logger.warning(f"⚠️ Error procesando un posible match de tarjeta: {match} - {e}")
             continue
 
+    # También buscar otros patrones comunes
+    # Patrón con separadores específicos
+    alt_patterns = [
+        r"(\d{16})[|/](\d{2})[|/](\d{2,4})[|/](\d{3,4})",
+        r"(\d{16})\s+(\d{2})\s+(\d{2,4})\s+(\d{3,4})",
+        r"CC:\s*(\d{16})[|/](\d{2})[|/](\d{2,4})[|/](\d{3,4})",
+        r"Card:\s*(\d{16})[|/](\d{2})[|/](\d{2,4})[|/](\d{3,4})",
+    ]
+    
+    for pattern in alt_patterns:
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        for match in matches:
+            try:
+                if len(match) == 4:
+                    card_num, month, year, cvv = match
+                    if len(card_num) == 16 and len(month) == 2 and len(cvv) >= 3:
+                        year_normalized = year[-2:] if len(year) == 4 else year
+                        cvv_normalized = cvv[:3] if len(cvv) > 3 else cvv
+                        cards.append(f"{card_num}|{month}|{year_normalized}|{cvv_normalized}")
+            except (IndexError, TypeError, ValueError) as e:
+                logger.warning(f"⚠️ Error procesando tarjeta con patrón alternativo: {match} - {e}")
+                continue
+
     # Eliminar duplicados y devolver la lista
     return list(set(cards))
+
 
 # --- Instancias Globales ---
 BIN_DATABASE: Dict[str, Dict[str, str]] = load_bin_database()
@@ -585,6 +821,7 @@ async def resolve_chat(chat_identifier: str) -> Optional[int]:
     except Exception as e:
         logger.error(f"  ❌ No se pudo resolver '{chat_identifier}': {e}")
         return None
+
 
 async def resolve_destination_chat(force_refresh: bool = False) -> Optional[int]:
     """Resuelve y cachea el chat de destino para tolerar cambios de ID o username."""
@@ -747,6 +984,46 @@ async def outgoing_card_sender() -> None:
 
         await asyncio.sleep(SEND_INTERVAL_SECONDS)
 
+
+async def process_message_text(text: str, chat_id: int, message_id: int = 0) -> int:
+    """Procesa el texto de un mensaje, incluyendo enlaces procesables, y retorna el número de tarjetas encontradas."""
+    if not text:
+        return 0
+
+    new_cards_count = 0
+    
+    # 1. Buscar tarjetas directamente en el texto del mensaje
+    direct_cards = extract_cards(text)
+    for card in direct_cards:
+        success = await send_card_immediately(card, f"Chat: {chat_id}, Msg: {message_id}")
+        if success:
+            new_cards_count += 1
+    
+    # 2. Buscar enlaces procesables y extraer tarjetas de ellos
+    urls = extract_urls(text)
+    processable_urls = [url for url in urls if url_matches_processable_domain(url)]
+    
+    if processable_urls:
+        logger.info(f"📎 Encontrados {len(processable_urls)} enlaces procesables en mensaje {message_id}")
+        
+        # Crear sesión HTTP para procesar enlaces
+        async with aiohttp.ClientSession() as session:
+            for url in processable_urls:
+                try:
+                    cards_from_url = await extract_cards_from_url(url, session)
+                    logger.info(f"🔗 Procesado enlace {url}: {len(cards_from_url)} tarjetas encontradas")
+                    
+                    for card in cards_from_url:
+                        success = await send_card_immediately(card, f"URL: {url}, Chat: {chat_id}")
+                        if success:
+                            new_cards_count += 1
+                            
+                except Exception as e:
+                    logger.error(f"❌ Error procesando enlace {url}: {e}")
+    
+    return new_cards_count
+
+
 async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
     """
     Scrapea mensajes de un chat específico y encola las tarjetas detectadas para envío pausado.
@@ -772,16 +1049,13 @@ async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
                 if should_skip_text_for_ignored_links(text):
                     logger.info(
                         f"Saltando mensaje {message.id} de chat {chat_id}: "
-                        "contiene enlace de dominio excluido (telegra.ph)."
+                        "contiene enlace de dominio excluido."
                     )
                     continue
 
-                cards_found = extract_cards(text)
-
-                for card in cards_found:
-                    success = await send_card_immediately(card, f"Chat: {chat_id}")
-                    if success:
-                        new_cards_count += 1
+                # Procesar el texto del mensaje (incluye enlaces procesables)
+                cards_found = await process_message_text(text, chat_id, message.id)
+                new_cards_count += cards_found
 
         logger.info(f"Chat {chat_id}: Procesados {max_message_id_in_chat - last_processed_id} mensajes nuevos. Encontradas {new_cards_count} tarjetas.")
         return max_message_id_in_chat, new_cards_count
@@ -790,6 +1064,7 @@ async def scrape_chat_realtime(chat_id: int) -> tuple[int, int]:
         logger.error(f"Error scrapeando chat {chat_id}: {e}")
         # Devolver el último ID conocido si ocurre un error para no perder el progreso.
         return last_processed_id, 0
+
 
 async def join_chat_if_needed(chat_identifier: str) -> bool:
     """
@@ -892,6 +1167,7 @@ async def start_cmd(client: Client, message):
         f"<b>Chats monitoreados:</b>\n{chats_list_formatted}\n\n"
         f"💳 Envío: <b>Cola pausada, 1 mensaje cada {SEND_INTERVAL_SECONDS}s</b>\n"
         f"📊 Base BIN: <code>{CSV_FILE}</code> ({len(BIN_DATABASE)} entradas cargadas)\n"
+        f"🔗 Dominios procesables: <code>{html.escape(', '.join(sorted(PROCESSABLE_LINK_DOMAINS)))}</code>\n"
         f"🔕 Dominios saltados: <code>{html.escape(', '.join(sorted(IGNORED_LINK_DOMAINS)))}</code>\n"
         f"💾 DB persistente: <code>{html.escape(db.db_path)}</code>\n"
         f"⏱️ Intervalo de escaneo: <code>{CHECK_INTERVAL}s</code>\n\n"
@@ -929,6 +1205,7 @@ async def status_cmd(client: Client, message):
         f"📡 <b>Estado del bot</b>\n\n"
         f"<b>Scraper:</b> <code>{scraper_status}</code>\n"
         f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
+        f"<b>Dominios procesables:</b> <code>{html.escape(', '.join(sorted(PROCESSABLE_LINK_DOMAINS)))}</code>\n"
         f"<b>Dominios saltados:</b> <code>{html.escape(', '.join(sorted(IGNORED_LINK_DOMAINS)))}</code>\n"
         f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
         f"<b>Intervalo de escaneo:</b> <code>{CHECK_INTERVAL}s</code>\n"
@@ -937,11 +1214,11 @@ async def status_cmd(client: Client, message):
         f"<b>Destination chat:</b> <code>{DESTINATION_CHAT_ID or DESTINATION_CHAT}</code>\n"
         f"<b>DB persistente:</b> <code>{html.escape(db.db_path)}</code>\n"
         f"<b>Tarjetas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
+        f"<b>Enlaces procesados:</b> <code>{stats.get('links_processed', 0)}</code>\n"
         f"<b>Escaneos con hallazgos:</b> <code>{stats.get('total_scans', 0)}</code>\n"
         f"<b>Chats con progreso:</b> <code>{len(last_ids)}</code>",
         parse_mode=ParseMode.HTML,
     )
-
 
 
 
@@ -968,12 +1245,15 @@ async def stats_cmd(client: Client, message):
     """Comando /stats - Muestra estadísticas generales."""
     stats = db.data.get("stats", {})
     processed_count = len(db.data.get("processed_cards", []))
+    processed_links_count = len(db.data.get("processed_links", []))
 
     await message.reply(
         f"📊 <b>Estadísticas</b>\n\n"
         f"<b>Tarjetas nuevas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
         f"<b>Ciclos con detecciones:</b> <code>{stats.get('total_scans', 0)}</code>\n"
+        f"<b>Enlaces procesados:</b> <code>{stats.get('links_processed', 0)}</code>\n"
         f"<b>Registros deduplicados:</b> <code>{processed_count}</code>\n"
+        f"<b>Enlaces únicos procesados:</b> <code>{processed_links_count}</code>\n"
         f"<b>Mensajes pendientes en cola:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>",
         parse_mode=ParseMode.HTML,
     )
