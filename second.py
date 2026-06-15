@@ -1285,8 +1285,7 @@ async def start_cmd(client: Client, message):
         f"/stats - Mostrar estadísticas generales.\n"
         f"/export_db - Exportar la base de datos en CSV.\n"
         f"/refresh_destination - Refrescar el destination chat.\n"
-        f"/test - Enviar una tarjeta de prueba formateada.\n"
-        f"/test_link <url> - Probar scraping de un enlace específico.",
+        f"/test - Enviar una tarjeta de prueba formateada.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -1302,21 +1301,186 @@ async def test_cmd(client: Client, message):
     else:
         await message.reply("❌ Falló el encolado del mensaje de prueba.")
 
+@app.on_message(filters.command("status"))
+async def status_cmd(client: Client, message):
+    """Comando /status - Muestra el estado actual del bot."""
+    stats = db.data.get("stats", {})
+    last_ids = db.data.get("last_ids", {})
 
-@app.on_message(filters.command("test_link") & filters.private)
-async def test_link_cmd(client: Client, message):
-    """Comando /test_link - Prueba el scraping de un enlace específico."""
-    if len(message.command) < 2:
-        await message.reply("❌ Uso: /test_link <URL>")
+    scraper_status = "activo" if USER_CLIENT_READY else "deshabilitado: SESSION_STRING inválido o ausente"
+
+    await message.reply(
+        f"📡 <b>Estado del bot</b>\n\n"
+        f"<b>Scraper:</b> <code>{scraper_status}</code>\n"
+        f"<b>Chats configurados:</b> <code>{len(CHATS_TO_SCRAPE)}</code>\n"
+        f"<b>Dominios procesables:</b> <code>{html.escape(', '.join(sorted(PROCESSABLE_LINK_DOMAINS)))}</code>\n"
+        f"<b>Dominios saltados:</b> <code>{html.escape(', '.join(sorted(IGNORED_LINK_DOMAINS)))}</code>\n"
+        f"<b>BINs cargados:</b> <code>{len(BIN_DATABASE)}</code>\n"
+        f"<b>Intervalo de escaneo:</b> <code>{CHECK_INTERVAL}s</code>\n"
+        f"<b>Intervalo de envío:</b> <code>{SEND_INTERVAL_SECONDS}s</code>\n"
+        f"<b>Cola pendiente:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>\n"
+        f"<b>Destination chat:</b> <code>{DESTINATION_CHAT_ID or DESTINATION_CHAT}</code>\n"
+        f"<b>DB persistente:</b> <code>{html.escape(db.db_path)}</code>\n"
+        f"<b>Tarjetas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
+        f"<b>Enlaces procesados:</b> <code>{stats.get('links_processed', 0)}</code>\n"
+        f"<b>Escaneos con hallazgos:</b> <code>{stats.get('total_scans', 0)}</code>\n"
+        f"<b>Chats con progreso:</b> <code>{len(last_ids)}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+
+@app.on_message(filters.command("refresh_destination"))
+async def refresh_destination_cmd(client: Client, message):
+    """Comando /refresh_destination - Fuerza la resolución del destination chat configurado."""
+    destination_chat_id = await resolve_destination_chat(force_refresh=True)
+
+    if destination_chat_id is None:
+        await message.reply(
+            "❌ No se pudo resolver el destination chat. "
+            "Envía o reenvía un evento/mensaje en el canal destino para que el bot registre el ID actualizado."
+        )
         return
-    
-    url = message.command[1]
-    
-    if not url.startswith(('http://', 'https://')):
-        url = 'https://' + url
-    
-    if not url_matches_processable_domain(url):
-        await message.reply(f"❌ URL no procesable. Dominios permitidos: {', '.join(PROCESSABLE_LINK_DOMAINS)}")
+
+    await message.reply(
+        f"✅ Destination chat actualizado: <code>{destination_chat_id}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@app.on_message(filters.command("stats"))
+async def stats_cmd(client: Client, message):
+    """Comando /stats - Muestra estadísticas generales."""
+    stats = db.data.get("stats", {})
+    processed_count = len(db.data.get("processed_cards", []))
+    processed_links_count = len(db.data.get("processed_links", []))
+
+    await message.reply(
+        f"📊 <b>Estadísticas</b>\n\n"
+        f"<b>Tarjetas nuevas detectadas:</b> <code>{stats.get('total_cards', 0)}</code>\n"
+        f"<b>Ciclos con detecciones:</b> <code>{stats.get('total_scans', 0)}</code>\n"
+        f"<b>Enlaces procesados:</b> <code>{stats.get('links_processed', 0)}</code>\n"
+        f"<b>Registros deduplicados:</b> <code>{processed_count}</code>\n"
+        f"<b>Enlaces únicos procesados:</b> <code>{processed_links_count}</code>\n"
+        f"<b>Mensajes pendientes en cola:</b> <code>{OUTGOING_CARD_QUEUE.qsize()}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@app.on_message(filters.command(["export_db", "exportdb"]))
+async def export_db_cmd(client: Client, message):
+    """Comando /export_db - Exporta la base de datos persistente en formato CSV."""
+    export_path: Optional[str] = None
+
+    try:
+        export_path = db.export_csv()
+        await client.send_document(
+            chat_id=message.chat.id,
+            document=export_path,
+            caption="✅ Exportación de la base de datos en formato CSV.",
+        )
+    except Exception as e:
+        logger.exception(f"❌ Error exportando la DB a CSV: {e}")
+        await message.reply("❌ No se pudo exportar la base de datos en CSV. Revisa los logs del servicio.")
+    finally:
+        if export_path and os.path.exists(export_path):
+            try:
+                os.remove(export_path)
+            except OSError as e:
+                logger.warning(f"⚠️ No se pudo eliminar el CSV temporal '{export_path}': {e}")
+
+
+@app.on_message(filters.command("force"))
+async def force_cmd(client: Client, message):
+    """Comando /force - Fuerza un escaneo inmediato de todos los chats configurados."""
+    if not USER_CLIENT_READY:
+        await message.reply("❌ Scraper deshabilitado: configura un SESSION_STRING válido de Pyrogram y reinicia el servicio.")
         return
-    
-    await message.reply(f"
+
+    await message.reply("🔍 Iniciando escaneo manual...")
+    resolved_chats = await resolve_configured_chats()
+
+    if not resolved_chats:
+        await message.reply("❌ No hay chats válidos para escanear.")
+        return
+
+    total_new_cards = await scan_configured_chats_once(resolved_chats)
+    await message.reply(
+        f"✅ Escaneo manual completado. Nuevas tarjetas detectadas: <code>{total_new_cards}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def start_user_client() -> bool:
+    """Inicia el cliente de usuario; si la sesión es inválida, mantiene vivo el bot."""
+    global USER_CLIENT_READY
+
+    if not SESSION_STRING:
+        logger.error(
+            "❌ SESSION_STRING no está configurado. El bot seguirá activo, "
+            "pero el scraper automático queda deshabilitado hasta configurar una sesión Pyrogram válida."
+        )
+        return False
+
+    try:
+        await user.start()
+    except Exception:
+        USER_CLIENT_READY = False
+        logger.exception(
+            "❌ No se pudo iniciar el cliente de usuario. Revisa SESSION_STRING: "
+            "debe ser una sesión válida generada con Pyrogram, no el BOT_TOKEN ni un archivo .session."
+        )
+        return False
+
+    USER_CLIENT_READY = True
+    logger.info("✅ Cliente de usuario iniciado correctamente.")
+    return True
+
+
+async def main() -> None:
+    """Punto de entrada principal: inicia el bot y, si es posible, el scanner en segundo plano."""
+    scanner_task: Optional[asyncio.Task] = None
+    sender_task: Optional[asyncio.Task] = None
+
+    try:
+        logger.info("🚀 Iniciando cliente bot de Telegram...")
+        await app.start()
+        logger.info("✅ Cliente bot iniciado correctamente.")
+        await resolve_destination_chat(force_refresh=True)
+        sender_task = asyncio.create_task(outgoing_card_sender())
+
+        logger.info("🚀 Iniciando cliente de usuario para el scraper...")
+        if await start_user_client():
+            scanner_task = asyncio.create_task(auto_scanner())
+            logger.info("🤖 Scraper en ejecución. Presione Ctrl+C para detenerlo.")
+        else:
+            logger.error("⚠️ Scraper deshabilitado; el bot queda vivo para comandos mientras corriges SESSION_STRING.")
+
+        await asyncio.Event().wait()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        logger.info("Deteniendo bot...")
+    except Exception:
+        logger.exception("❌ Error fatal durante el arranque o ejecución del bot.")
+        raise
+    finally:
+        for task in (scanner_task, sender_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        if user.is_connected:
+            await user.stop()
+        if app.is_connected:
+            await app.stop()
+        logger.info("Bot detenido correctamente.")
+
+
+if __name__ == "__main__":
+    try:
+        APP_LOOP.run_until_complete(main())
+    finally:
+        APP_LOOP.run_until_complete(APP_LOOP.shutdown_asyncgens())
+        APP_LOOP.close()
