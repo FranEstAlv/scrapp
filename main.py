@@ -170,6 +170,14 @@ class SimpleDB:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXIST card_data (
+                        card_data TEXT PRIMARY KEY,
+                        value INTEGER NOT NULL DEFAULT 0
+                    )
+                    """
+                )
                 conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_cards', 0)")
                 conn.execute("INSERT OR IGNORE INTO stats (key, value) VALUES ('total_scans', 0)")
                 conn.commit()
