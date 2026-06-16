@@ -309,6 +309,9 @@ class SimpleDB:
                 writer.writerow(["Card Data", "Source Info", "Processed At"])
 
                 for row in conn.execute("SELECT card_data, source_info, processed_at FROM processed_cards ORDER BY processed_at DESC"):
+                    card_data = row["card_data"]
+                    source_info = row["source_info"] if row["source_info"] is not None else ""
+                    processed_at = row["processed_at"]
                     writer.writerow([row["card_data"], row.get("source_info", ""), row["processed_at"]])
 
         except Exception:
