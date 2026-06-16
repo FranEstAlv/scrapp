@@ -320,10 +320,9 @@ class SimpleDB:
                 for row in conn.execute("SELECT key, value FROM stats ORDER BY key"):
                     writer.writerow(["stats", row["key"], row["value"], ""])
 
-                for row in conn.execute(
-                    "SELECT card_data, processed_at, source_info FROM processed_cards ORDER BY processed_at DESC"
-                ):
+                for row in conn.execute("SELECT card_data, processed_at, source_info FROM processed_cards ORDER BY processed_at DESC"):
                     writer.writerow(["processed_cards", row["card_data"], row["source_info"], row["processed_at"]])
+                    
         except Exception:
             try:
                 os.close(fd)
