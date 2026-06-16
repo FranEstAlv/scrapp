@@ -484,7 +484,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
     )
 
     payload = {
-        "chat_id": chat_id,
+        "chat_id"= "DESTINATION_CHAT",
         "text": message,
         "parse_mode": "HTML",
         "reply_markup": {
@@ -493,7 +493,6 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
                     {
                         "text": "⭐ OLIMPO BINS",
                         "url": "https://t.me/olimpobins"
-                        "style": "success"
                     }
                 ]
             ]
