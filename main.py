@@ -483,7 +483,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
     )
 
-    await app.send_message(
+        await app.send_message(
         chat_id=DESTINATION_CHAT,
         text=mensaje,
         parse_mode=ParseMode.HTML,
