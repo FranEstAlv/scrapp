@@ -493,11 +493,11 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
                     InlineKeyboardButton(
                         "⭐ OLIMPO",
                         url=BUTTON_URL
-                    }
+                    )
                 ]
             ]
-        }
-    }
+        )
+    )
 
     return message
 
