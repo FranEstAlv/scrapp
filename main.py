@@ -320,7 +320,7 @@ class SimpleDB:
               os.remove(export_path)
           raise
 
-        return exporth_path
+        return export_path
 
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
