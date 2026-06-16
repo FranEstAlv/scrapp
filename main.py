@@ -966,7 +966,7 @@ async def deliver_card_message(message_content: str) -> bool:
 
     try:
         await app.send_message(
-            destination_chat_id, 
+            DESTINATION_CHAT_ID, 
             message_content, 
             parse_mode=ParseMode.HTML,
             reply_markup=reply_markup
