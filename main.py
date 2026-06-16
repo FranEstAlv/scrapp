@@ -944,41 +944,41 @@ async def deliver_card_message(message_content: str) -> bool:
     if destination_chat_id is None:
         return False
         
-        reply_markup = None
-        if BUTTON_URL:
-            reply_markup = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("⭐ OLIMPO", url=BUTTON_URL)]]
-            )
+    reply_markup = None
+    if BUTTON_URL:
+        reply_markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("⭐ OLIMPO", url=BUTTON_URL)]]
+        )
     
-        try:
-            await app.send_message(
-                destination_chat_id,
-                message_content,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-            return True
-        except Exception as e:
-            logger.warning(
-                f"⚠️ Falló el envío a destination chat {destination_chat_id}; "
-                f"se intentará refrescar el ID: {e}"
-            )
+    try:
+        await app.send_message(
+            destination_chat_id,
+            message_content,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+        return True
+    except Exception as e:
+        logger.warning(
+            f"⚠️ Falló el envío a destination chat {destination_chat_id}; "
+            f"se intentará refrescar el ID: {e}"
+        )
 
-        destination_chat_id = await resolve_destination_chat(force_refresh=True)
-        if destination_chat_id is None:
-            return False
+    destination_chat_id = await resolve_destination_chat(force_refresh=True)
+    if destination_chat_id is None:
+        return False
 
-        try:
-            await app.send_message(
-                destination_chat_id,
-                message_content,
-                parse_mode=ParseMode.HTML,
-                reply_markup=reply_markup
-            )
-            return True
-        except Exception as e:
-            DESTINATION_REFRESH_PENDING = True
-            logger.error(
+    try:
+        await app.send_message(
+            destination_chat_id,
+            message_content,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
+        return True
+    except Exception as e:
+        DESTINATION_REFRESH_PENDING = True
+        logger.error(
             f"❌ Error enviando al destination chat {destination_chat_id}. "
             f"Queda pendiente registrar un evento del canal/grupo para actualizar el ID: {e}"
         )
