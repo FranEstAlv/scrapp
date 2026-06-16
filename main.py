@@ -483,16 +483,16 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
     )
 
-    payload = {
-        "chat_id"= "DESTINATION_CHAT",
-        "text": message,
-        "parse_mode": "HTML",
-        "reply_markup": {
-            "inline_keyboard": [
+    await app.send_message(
+        chat_id=DESTINATION_CHAT,
+        text=mensaje,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [
                 [
-                    {
-                        "text": "⭐ OLIMPO BINS",
-                        "url": "https://t.me/olimpobins"
+                    InlineKeyboardButton(
+                        "⭐ OLIMPO",
+                        url=BUTTON_URL
                     }
                 ]
             ]
