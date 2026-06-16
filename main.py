@@ -481,7 +481,10 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>Nivel= {html.escape(nivel)}</b>\n"
         f"<b>País= {html.escape(country_with_flag)}</b>\n"
         f"<b>━━━━━━━━</b>\n"
-        f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
+        f"<b>DESARROLLADO POR\n"
+        f"<b><code>@MrMxyzptlk04</code></b>\n" 
+        f"<b><code>@Chack0071</code></b>\n"
+        f"<b>━━━━━━━━</b>\n"
     )
 
     return message
