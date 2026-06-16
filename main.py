@@ -44,6 +44,7 @@ except ValueError:
 SEND_INTERVAL_SECONDS: int = int(os.environ.get("SEND_INTERVAL_SECONDS", 180))
 DESTINATION_CHAT_ID: Optional[int] = DESTINATION_CHAT if isinstance(DESTINATION_CHAT, int) else None
 DESTINATION_REFRESH_PENDING: bool = False
+BUTTON_URL = os.environ.get("BUTTON_URL", "")
 
 CHATS_TO_SCRAPE: List[str] = [
     "@viplunaticscrapper",
@@ -481,22 +482,6 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>País= {html.escape(country_with_flag)}</b>\n"
         f"<b>━━━━━━━━</b>\n"
         f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
-    )
-
-        await app.send_message(
-        chat_id=DESTINATION_CHAT,
-        text=mensaje,
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "⭐ OLIMPO",
-                        url=BUTTON_URL
-                    )
-                ]
-            ]
-        )
     )
 
     return message
@@ -967,8 +952,25 @@ async def deliver_card_message(message_content: str) -> bool:
     if destination_chat_id is None:
         return False
 
+    # Crear botón inline
+    reply_markup = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⭐ OLIMPO",
+                    url=BUTTON_URL
+                )
+            ]
+        ]
+    ) if BUTTON_URL else None
+
     try:
-        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
+        await app.send_message(
+            destination_chat_id, 
+            message_content, 
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
         return True
     except Exception as e:
         logger.warning(
@@ -981,7 +983,12 @@ async def deliver_card_message(message_content: str) -> bool:
         return False
 
     try:
-        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
+        await app.send_message(
+            destination_chat_id, 
+            message_content, 
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup
+        )
         return True
     except Exception as e:
         DESTINATION_REFRESH_PENDING = True
