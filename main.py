@@ -480,7 +480,21 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>Tipo= {html.escape(tipo)}</b>\n"
         f"<b>Nivel= {html.escape(nivel)}</b>\n"
         f"<b>País= {html.escape(country_with_flag)}</b>\n"
-        f"<b>━━━━━━━━</b>"
+        f"<b>━━━━━━━━</b>"\n"
+        f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
+           )
+
+    payload = {
+        "chat_id": chat_id,
+        "text": mensaje,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "⭐ OLIMPO",
+                        "url": BUTTON_URL,
+                        "style": "success"
     )
 
     return message
