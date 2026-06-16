@@ -312,7 +312,7 @@ class SimpleDB:
                     card_data = row["card_data"]
                     source_info = row["source_info"] if row["source_info"] is not None else ""
                     processed_at = row["processed_at"]
-                    writer.writerow([row["card_data"], row.get("source_info", ""), row["processed_at"]])
+                    writer.writerow([card_data, source_info, processed_at])
 
         except Exception:
           try:
