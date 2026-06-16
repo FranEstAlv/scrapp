@@ -317,9 +317,9 @@ class SimpleDB:
           except OSError:
               pass
           if os.path.exists(export_path):
-          raise
+        raise
 
-        return exporth_path
+    return exporth_path
 
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
