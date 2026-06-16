@@ -409,14 +409,13 @@ def get_bin_info(card_number: str, bin_database: Dict[str, Dict[str, str]]) -> O
                 return bin_database[bin_code]
     return None
 
-
 def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]]) -> Optional[str]:
     """
     Formatea el mensaje de la tarjeta con la información del BIN.
     Maneja tanto tarjetas con CVV como sin CVV.
     """
     parts = card_data.split("|")
-    
+
     # Manejar tanto tarjetas con CVV como sin CVV
     if len(parts) == 4:
         card_num, month, year, cvv = parts
@@ -428,7 +427,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
     else:
         logger.warning(f"Formato de tarjeta inválido: {card_data}")
         return None
-    
+
     # Validaciones básicas
     if len(card_num) < 12 or len(month) != 2:
         logger.warning(f"Datos de tarjeta no válidos: {card_data}")
@@ -443,7 +442,7 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
     # Censurar la tarjeta para mostrarla
     censored_card_num = mask_card_number(card_num)
     display_year = f"20{year}" if len(year) == 2 else year
-    
+
     if has_cvv and cvv != "xxx":
         censored = f"{censored_card_num}|{month}|{display_year}|{cvv[:3]}"
         cvv_display = f"{cvv[:3]}"
@@ -480,25 +479,28 @@ def format_card_message(card_data: str, bin_database: Dict[str, Dict[str, str]])
         f"<b>Tipo= {html.escape(tipo)}</b>\n"
         f"<b>Nivel= {html.escape(nivel)}</b>\n"
         f"<b>País= {html.escape(country_with_flag)}</b>\n"
-        f"<b>━━━━━━━━</b>"\n"
+        f"<b>━━━━━━━━</b>\n"
         f"<b>DESARROLLADO POR <code>@MrMxyzptlk04</code> Y <code>@Chack0071</code></b>\n"
-           )
+    )
 
     payload = {
         "chat_id": chat_id,
-        "text": mensaje,
+        "text": message,
         "parse_mode": "HTML",
         "reply_markup": {
             "inline_keyboard": [
                 [
                     {
-                        "text": "⭐ OLIMPO",
-                        "url": BUTTON_URL,
+                        "text": "⭐ OLIMPO BINS",
+                        "url": "https://t.me/olimpobins"
                         "style": "success"
-    )
+                    }
+                ]
+            ]
+        }
+    }
 
     return message
-
 
 def extract_urls(text: str) -> List[str]:
     """Extrae URLs HTTP/HTTPS de un texto."""
