@@ -947,6 +947,7 @@ async def deliver_card_message(message_content: str) -> bool:
         reply_markup = None
         if BUTTON_URL:
             reply_markup = InlineKeyboardMarkup
+            
                 [
                     [
                         InlineKeyboardButton(
