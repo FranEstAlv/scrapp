@@ -315,25 +315,24 @@ class SimpleDB:
                 writer.writerow(["table", "key", "value", "created_at"])
 
                 for row in conn.execute("SELECT chat_id, message_id FROM last_ids ORDER BY chat_id"):
-                    writer.writerow(["last_ids", row["chat_id"], row["message_id"], ""])
+                    writer.writerow(["last_ids", row[0], row[1], ""])
 
                 for row in conn.execute("SELECT key, value FROM stats ORDER BY key"):
-                    writer.writerow(["stats", row["key"], row["value"], ""])
+                    writer.writerow(["stats", row[0], row[1], ""])
 
                 for row in conn.execute("SELECT card_data, processed_at, source_info FROM processed_cards ORDER BY processed_at DESC"):
-                    writer.writerow(["processed_cards", row["card_data"], row["source_info"], row["processed_at"]])
-                    
+                    writer.writerow(["processed_cards", row[0], row[2], row[1]])
+
         except Exception:
             try:
-                os.close(fd)
+               bos.close(fd)
             except OSError:
                 pass
             if os.path.exists(export_path):
-                os.remove(export_path)
+               os.remove(export_path)
             raise
 
         return export_path
-
 
 def load_bin_database(csv_path: str = CSV_FILE) -> Dict[str, Dict[str, str]]:
     """
