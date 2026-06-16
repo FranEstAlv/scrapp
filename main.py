@@ -951,9 +951,8 @@ async def deliver_card_message(message_content: str) -> bool:
     destination_chat_id = await resolve_destination_chat()
     if destination_chat_id is None:
         return False
-
-    # Crear botón inline
-    reply_markup = InlineKeyboardMarkup(
+        
+        reply_markup = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
@@ -964,13 +963,9 @@ async def deliver_card_message(message_content: str) -> bool:
         ]
     ) if BUTTON_URL else None
 
+    
     try:
-        await app.send_message(
-            DESTINATION_CHAT_ID, 
-            message_content, 
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup
-        )
+        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
         return True
     except Exception as e:
         logger.warning(
@@ -983,12 +978,7 @@ async def deliver_card_message(message_content: str) -> bool:
         return False
 
     try:
-        await app.send_message(
-            destination_chat_id, 
-            message_content, 
-            parse_mode=ParseMode.HTML,
-            reply_markup=reply_markup
-        )
+        await app.send_message(destination_chat_id, message_content, parse_mode=ParseMode.HTML)
         return True
     except Exception as e:
         DESTINATION_REFRESH_PENDING = True
@@ -997,7 +987,6 @@ async def deliver_card_message(message_content: str) -> bool:
             f"Queda pendiente registrar un evento del canal/grupo para actualizar el ID: {e}"
         )
         return False
-
 
 async def send_card_immediately(card_data: str, source_info: str = "") -> bool:
     """
