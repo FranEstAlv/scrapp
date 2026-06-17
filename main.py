@@ -22,6 +22,8 @@ API_ID_STR = os.environ.get("API_ID")
 API_HASH = os.environ.get("API_HASH")
 SESSION_STRING = os.environ.get("SESSION_STRING", "").strip().strip("\"\'")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_COMM_CHANNEL = os.environ.get("BOT_COMM_CHANNEL", "")
+TELEGRAPH_SOURCE = "@AsukaScr"
 
 # Validar variables críticas
 if not all([API_ID_STR, API_HASH, BOT_TOKEN]):
