@@ -60,9 +60,9 @@ CHATS_TO_SCRAPE: List[str] = [
     "-1002328190486"
 ]
 
-CHANNEL_MAPPING: Dict[str, Optional[Dict[[str, str]]]] = {
+CHANNEL_MAPPING: Dict[str, Optional[Dict[str, str]]] = {
     "-1002328190486": {"destination": "DESTINATION_CHAT_ID"}
-    },
+}
     
 CHECK_INTERVAL: int = int(os.environ.get("CHECK_INTERVAL", 30))
 DB_VOLUME: str = os.environ.get("DB_VOLUME", "/data")
