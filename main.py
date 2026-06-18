@@ -44,7 +44,7 @@ try:
 except ValueError:
     DESTINATION_CHAT = DESTINATION_CHAT_STR
 
-SEND_INTERVAL_SECONDS: int = int(os.environ.get("SEND_INTERVAL_SECONDS", 90))
+SEND_INTERVAL_SECONDS: int = int(os.environ.get("SEND_INTERVAL_SECONDS", 30))
 DESTINATION_CHAT_ID: Optional[int] = DESTINATION_CHAT if isinstance(DESTINATION_CHAT, int) else None
 DESTINATION_REFRESH_PENDING: bool = False
 BUTTON_URL = os.environ.get("BUTTON_URL", "")
