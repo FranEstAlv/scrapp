@@ -52,11 +52,6 @@ BOT_TOKEN_2 = os.environ.get("BOT_TOKEN_2", "")
 BOT2_CHAT_ID = os.environ.get("BOT2_CHAT_ID", "")
 
 CHATS_TO_SCRAPE: List[str] = [
-    "@viplunaticscrapper",
-    "@AsukaScr",
-    "-1003636233013",
-    "-1003075577632",
-    "-1003658677167",
     "-1002408067156",
     "-1002271492504",
     "-1002328190486"
