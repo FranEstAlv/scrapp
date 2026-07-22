@@ -1,0 +1,8 @@
+Pyrogram==2.0.106
+TgCrypto==1.2.5
+python-dotenv==1.0.0
+requests==2.31.0
+beautifulsoup4==4.12.0
+python-dateutil==2.8.2
+Telethon==1.43.2
+aiohttp>=3.14.1,<4
